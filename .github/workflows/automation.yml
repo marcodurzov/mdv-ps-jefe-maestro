@@ -1,6 +1,9 @@
 name: MDV PS Automation
 
 on:
+  push:
+    branches:
+      - main
   schedule:
     - cron: '0 17 * * 1,4,6'
     - cron: '0 23 * * 1,4,6'
