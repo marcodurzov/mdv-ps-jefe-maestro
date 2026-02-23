@@ -22,10 +22,23 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Show files (debug)
+        run: ls -R
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install psutil
+          pip install gspread
+          pip install google-auth
+          pip install google-auth-oauthlib
+          pip install google-auth-httplib2
+
+      - name: Verify installation
+        run: |
+          python -c "import psutil; print('psutil OK')"
+          python -c "import gspread; print('gspread OK')"
 
       - name: Run Update
         working-directory: core
