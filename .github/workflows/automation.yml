@@ -13,10 +13,6 @@ jobs:
   run:
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: core
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -32,9 +28,11 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Update
+        working-directory: core
         run: python main_update.py
 
       - name: Run Model
+        working-directory: core
         run: python main_run.py
         env:
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
