@@ -1,12 +1,13 @@
+from system.database import initialize_database
 from system.database import load_history
-from jefe_maestro_v6_elite_predictor import main as run_model
 
-if __name__=="__main__":
-    histories={
-        "Melate":load_history("Melate"),
-        "Revancha":load_history("Revancha"),
-        "Revanchita":load_history("Revanchita")
-    }
+initialize_database()
+
+data = {
+    "Melate": load_history("Melate"),
+    "Revancha": load_history("Revancha"),
+    "Revanchita": load_history("Revanchita")
+}
 
     df,stats=run_model(histories_override=histories)
 def main():
