@@ -80,10 +80,6 @@ import pandas as pd
 
 import joblib
 
-import gspread
-
-from google.oauth2.service_account import Credentials
-
 from sklearn.ensemble import IsolationForest
 
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
