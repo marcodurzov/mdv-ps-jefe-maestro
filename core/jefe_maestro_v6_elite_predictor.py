@@ -1,4 +1,3 @@
-@@ -0,0 +1,1993 @@
 #!/usr/bin/env python3
 
 # -*- coding: utf-8 -*-
