@@ -4,10 +4,11 @@ scikit-learn
 xgboost
 lightgbm
 tensorflow
-imblearn
+imbalanced-learn
 joblib
 requests
 gspread
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
+psutil
