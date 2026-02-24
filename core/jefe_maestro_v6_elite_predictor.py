@@ -16,3 +16,14 @@ import sys
 import math
 import random
 import datetime
+
+def main():
+    print("Iniciando Jefe Maestro Elite Predictor...")
+    
+    # Si tu modelo ya tiene una función principal diferente,
+    # reemplaza "run()" por el nombre real.
+    
+    try:
+        run()
+    except NameError:
+        print("No existe función run(). Ajustar nombre de función principal.")
