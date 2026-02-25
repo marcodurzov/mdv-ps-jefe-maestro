@@ -1,22 +1,25 @@
-from system.database import initialize_database
-from system.database import load_history
+from system.database import initialize_database, load_history
+from model_runner import run_model  # asegúrate que este import sea el correcto según tu proyecto
 
-initialize_database()
-
-data = {
-    "Melate": load_history("Melate"),
-    "Revancha": load_history("Revancha"),
-    "Revanchita": load_history("Revanchita")
-}
-
-    df,stats=run_model(histories_override=histories)
 def main():
-    print("Iniciando Jefe Maestro Elite Predictor...")
-    
-    # Si tu modelo ya tiene una función principal diferente,
-    # reemplaza "run()" por el nombre real.
-    
-    try:
-        run()
-    except NameError:
-        print("No existe función run(). Ajustar nombre de función principal.")
+
+    # Inicializar base SQLite
+    initialize_database()
+
+    # Cargar históricos desde SQLite
+    histories = {
+        "Melate": load_history("Melate"),
+        "Revancha": load_history("Revancha"),
+        "Revanchita": load_history("Revanchita")
+    }
+
+    # Ejecutar modelo
+    df, stats = run_model(histories_override=histories)
+
+    print("Modelo ejecutado correctamente.")
+    print(df.head())
+    print(stats)
+
+
+if __name__ == "__main__":
+    main()
