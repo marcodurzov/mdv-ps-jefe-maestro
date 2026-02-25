@@ -121,6 +121,12 @@ def update_local_csv(game, df_norm):
 
     updated_df = pd.concat([existing_df.drop(columns=["_fecha_dt"]), new_df.drop(columns=["_fecha_dt"])])
     updated_df = updated_df.sort_values("FECHA", ascending=False)
+    
+for _, row in new_df.iterrows():
+    fecha_iso = pd.to_datetime(row["FECHA"], dayfirst=True).strftime("%Y-%m-%d")
+    nums = [int(row[f"N{i}"]) for i in range(1,7) if str(row[f"N{i}"]).isdigit()]
+    if len(nums) == 6:
+        insert_draw(game, fecha_iso, nums)
 
     updated_df.to_csv(file_path, index=False)
 
@@ -141,6 +147,8 @@ def send_email_summary(text_body):
 
 def main():
     logger.info("Iniciando actualización local de los 3 juegos...")
+
+    initialize_database()
 
     summary = []
     for game, url in URLS.items():
