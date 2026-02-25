@@ -1,9 +1,11 @@
 from system.database import initialize_database, load_history
-from model_runner import run_model  # asegúrate que este import sea el correcto según tu proyecto
+from system.database import initialize_database, load_history
+from core.jefe_maestro_v6_elite_predictor import run_model
+
 
 def main():
 
-    # Inicializar base SQLite
+    # Inicializar base de datos
     initialize_database()
 
     # Cargar históricos desde SQLite
@@ -23,3 +25,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
