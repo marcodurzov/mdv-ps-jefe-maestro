@@ -28,7 +28,7 @@ jobs:
         run: python core/csv_updater.py
 
       - name: Run model
-        run: python core/main_run.py
+        run: python core/jefe_maestro_v6_elite_predictor.py
 
       - name: Commit updated CSV
         run: |
