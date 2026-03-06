@@ -346,109 +346,73 @@ def abort_no_data(reason: str):
 
 # ---------- Google Sheets loader (strict) ----------
 
-def gspread_client():
+# ---------- Local CSV loader (strict) ----------
 
-    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-
-    try:
-
-        if os.path.exists("credentials.json"):
-
-            creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
-
-        else:
-
-            env_json = os.getenv("GSPREAD_CREDENTIALS_JSON", "")
-
-            if not env_json:
-
-                raise RuntimeError("No credentials.json ni GSPREAD_CREDENTIALS_JSON encontrado")
-
-            creds = Credentials.from_service_account_info(json.loads(env_json), scopes=scopes)
-
-        return gspread.authorize(creds)
-
-    except Exception as e:
-
-        logger.error(f"Error creando cliente gspread: {e}")
-
-        send_telegram_alert(f"Error creando cliente gspread: {e}")
-
-        raise
-
-def load_history_strict(sheet_key: str, name: str) -> pd.DataFrame:
+def load_history_strict(name: str) -> pd.DataFrame:
 
     try:
 
-        client = gspread_client()
+        file_map = {
+            "Melate": "data/melate.csv",
+            "Revancha": "data/revancha.csv",
+            "Revanchita": "data/revanchita.csv"
+        }
 
-        wb = client.open_by_key(sheet_key)
+        path = file_map.get(name)
 
-        ws = wb.worksheets()[0]
+        if not path or not os.path.exists(path):
+            raise RuntimeError(f"Archivo CSV no encontrado para {name}: {path}")
 
-        data = ws.get_all_records()
-
-        df = pd.DataFrame(data)
+        df = pd.read_csv(path)
 
         if df.empty:
-
-            raise RuntimeError(f"Hoja {name} vacía")
+            raise RuntimeError(f"CSV vacío para {name}")
 
         df["FUENTE"] = name
 
         if "FECHA" in df.columns:
-
-            df["FECHA"] = pd.to_datetime(df["FECHA"], dayfirst=True, errors="coerce")
-
-        else:
-
-            df["FECHA"] = pd.NaT
+            df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
 
         k = LOTTERIES[name]["k"]
 
         expected_cols = [f"N{i}" for i in range(1, k + 1)]
 
         if not all(col in df.columns for col in expected_cols):
+            raise RuntimeError(f"CSV {name} falta columnas esperadas: {expected_cols}")
 
-            raise RuntimeError(f"Hoja {name} falta columnas esperadas: {expected_cols}")
-
-        df[expected_cols] = df[expected_cols].apply(pd.to_numeric, errors='coerce')
+        df[expected_cols] = df[expected_cols].apply(pd.to_numeric, errors="coerce")
 
         df = df.dropna(subset=expected_cols)
 
         if df.empty:
-
-            raise RuntimeError(f"Hoja {name} no contiene filas válidas tras parseo")
+            raise RuntimeError(f"CSV {name} no contiene filas válidas")
 
         n_max = LOTTERIES[name]["n_max"]
 
         for col in expected_cols:
-
             if not df[col].apply(lambda x: 1 <= int(x) <= n_max).all():
-
-                raise RuntimeError(f"Hoja {name} tiene valores fuera de rango en {col}")
+                raise RuntimeError(f"CSV {name} tiene valores fuera de rango en {col}")
 
         return df.sort_values("FECHA").reset_index(drop=True)
 
     except Exception as e:
 
-        logger.error(f"Error leyendo sheet {name}: {e}")
-
+        logger.error(f"Error leyendo CSV {name}: {e}")
         raise
+
 
 def load_all_histories_strict() -> Dict[str, pd.DataFrame]:
 
     dfs = {}
 
-    for name, info in LOTTERIES.items():
+    for name in LOTTERIES.keys():
 
         try:
 
-            df = load_history_strict(info["sheet_key"], name)
-
+            df = load_history_strict(name)
             dfs[name] = df
 
-            logger.info(f"[{name}] Historial cargado: {len(df):,} filas")
+            logger.info(f"[{name}] Historial cargado desde CSV: {len(df):,} filas")
 
         except Exception as e:
 
