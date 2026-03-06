@@ -180,3 +180,5 @@ def main():
 if __name__ == "__main__":
     main()
 
+df = df.sort_values("FECHA", ascending=False)
+df.to_csv(path, index=False)
