@@ -2,80 +2,54 @@ name: MDV Automation
 
 on:
   schedule:
-
-    # Actualizar resultados 11:00 AM (lunes jueves sábado)
-    - cron: '0 17 * * 1'
-    - cron: '0 17 * * 4'
-    - cron: '0 17 * * 6'
-
-    # Ejecutar modelo 11:30 AM
-    - cron: '30 17 * * 1'
-    - cron: '30 17 * * 4'
-    - cron: '30 17 * * 6'
+    # Actualizar resultados
+    - cron: '0 17 * * 1,4,6'
+    
+    # Ejecutar modelo
+    - cron: '30 17 * * 1,4,6'
 
   workflow_dispatch:
 
 jobs:
 
   update-results:
-    if: github.event.schedule == '0 17 * * 1' || github.event.schedule == '0 17 * * 4' || github.event.schedule == '0 17 * * 6'
-    runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
+    runs-on: ubuntu-latest
 
     steps:
 
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
       - name: Install dependencies
-        run: |
-          pip install pandas requests yagmail
+        run: pip install -r requirements.txt
 
-      - name: Update CSV results
-        run: |
-          python core/csv_updater.py
-
-      - name: Commit updated CSV
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "github-actions"
-
-          git add data/*.csv
-
-          git commit -m "Auto update historical data" || echo "No changes"
-
-          git push
+      - name: Update lottery results
+        run: python core/system/csv_updater.py
 
 
   run-model:
-    if: github.event.schedule == '30 17 * * 1' || github.event.schedule == '30 17 * * 4' || github.event.schedule == '30 17 * * 6'
+
     runs-on: ubuntu-latest
+    needs: update-results
 
     steps:
 
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
       - name: Install dependencies
-        run: |
-          pip install pandas numpy scikit-learn xgboost yagmail
+        run: pip install -r requirements.txt
 
-      - name: Run model
-        env:
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
-        run: |
-          python core/main_run.py
+      - name: Run prediction system
+        run: python core/system/main_run.py
