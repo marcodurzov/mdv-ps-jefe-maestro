@@ -1900,43 +1900,48 @@ except Exception as e:
 
         abort_no_data(f"Evaluación final falló: {e}")
 
-        # 5) Save aggregated
+               # 5) Save aggregated
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    aggregated_fn = os.path.join(
-        RESULTS_DIR,
-        f"aggregated_global_v6_{ts}.json"
-    )
-    try:
+        aggregated_fn = os.path.join(
+            RESULTS_DIR,
+            f"aggregated_global_v6_{ts}.json"
+        )
 
-        aggregated_to_save = []
+        try:
 
-        for _, row in df_global_top.iterrows():
+            aggregated_to_save = []
 
-            aggregated_to_save.append({
+            for _, row in df_global_top.iterrows():
 
-                "combo_str": " ".join(f"{int(x):02d}" for x in row["combo"]),
+                aggregated_to_save.append({
+                    "combo_str": " ".join(f"{int(x):02d}" for x in row["combo"]),
+                    "combo": [int(x) for x in row["combo"]],
+                    "global_composite": float(row["global_composite"]),
+                    "suma": int(row["suma"]),
+                    "per_lottery": row.get("per_lottery", {})
+                })
 
-                "combo": [int(x) for x in row["combo"]],
+            with open(aggregated_fn, "w", encoding="utf-8") as f:
 
-                "global_composite": float(row["global_composite"]),
+                json.dump(
+                    {
+                        "aggregated": aggregated_to_save,
+                        "system_info": system_info,
+                        "stats": stats
+                    },
+                    f,
+                    default=safe_json_convert,
+                    ensure_ascii=False,
+                    indent=2
+                )
 
-                "suma": int(row["suma"]),
+            logger.info(f"Aggregated saved: {aggregated_fn}")
 
-                "per_lottery": row.get("per_lottery", {})
+        except Exception as e:
 
-            })
-
-        with open(aggregated_fn, "w", encoding="utf-8") as f:
-
-            json.dump({"aggregated": aggregated_to_save, "system_info": system_info, "stats": stats}, f, default=safe_json_convert, ensure_ascii=False, indent=2)
-
-        logger.info(f"Aggregated saved: {aggregated_fn}")
-
-    except Exception as e:
-
-        logger.error(f"Error saving aggregated: {e}")
+            logger.error(f"Error saving aggregated: {e}")
 
     # 6) Save predictions history
 
