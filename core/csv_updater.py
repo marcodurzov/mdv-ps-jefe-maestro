@@ -127,13 +127,16 @@ def update_local_csv(game, df_norm):
         if len(nums) == 6:
             insert_draw(game, fecha_iso, nums)
 
-    updated_df = pd.concat([
-        existing_df.drop(columns=["_fecha_dt"]),
-        new_df.drop(columns=["_fecha_dt"])
-    ])
+    updated_df = pd.concat([df_existing, df_new])
 
-    updated_df = updated_df.sort_values("FECHA", ascending=False)
-    updated_df.to_csv(file_path, index=False)
+# ORDENAR CRONOLÓGICAMENTE (MAS RECIENTE ARRIBA)
+updated_df = updated_df.sort_values("_fecha_dt", ascending=False)
+
+# eliminar columna auxiliar
+updated_df = updated_df.drop(columns=["_fecha_dt"], errors="ignore")
+
+# guardar csv
+updated_df.to_csv(csv_path, index=False)
 
     logger.info("%s: agregadas %d filas.", game, len(new_df))
     return len(new_df)
