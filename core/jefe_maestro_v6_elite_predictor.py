@@ -1900,12 +1900,14 @@ except Exception as e:
 
         abort_no_data(f"Evaluación final falló: {e}")
 
-    # 5) Save aggregated
+        # 5) Save aggregated
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    aggregated_fn = os.path.join(RESULTS_DIR, f"aggregated_global_v6_{ts}.json")
-
+    aggregated_fn = os.path.join(
+        RESULTS_DIR,
+        f"aggregated_global_v6_{ts}.json"
+    )
     try:
 
         aggregated_to_save = []
