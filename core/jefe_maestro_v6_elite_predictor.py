@@ -1876,11 +1876,27 @@ def main():
 
     # 4) Final evaluation
 
+try:
+
+    df_global_top, stats = final_evaluate_and_select(
+        final_candidates,
+        hot_map,
+        pos_map,
+        model_files,
+        top_k=TOP_K
+    )
+
+    # ===============================
+    # MULTI CLUSTER SELECTION LAYER
+    # ===============================
+
     try:
-
-        df_global_top, stats = final_evaluate_and_select(final_candidates, hot_map, pos_map, model_files, top_k=TOP_K)
-
+        df_global_top = apply_multi_cluster_layer(df_global_top)
+        logger.info("Multi-cluster expansion aplicado correctamente")
     except Exception as e:
+        logger.warning(f"Multi-cluster layer falló: {e}")
+
+except Exception as e:
 
         abort_no_data(f"Evaluación final falló: {e}")
 
@@ -1937,6 +1953,109 @@ def main():
         send_telegram_alert(f"Error sending final email: {e}")
 
     logger.info("Proceso completado. Revisa results/ y tu correo.")
+
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics.pairwise import cosine_similarity
+
+import numpy as np
+import pandas as pd
+
+
+# ============================================================
+# AUTO DISCOVERY OF CLUSTERS
+# ============================================================
+
+def find_optimal_clusters(features, max_k=20):
+
+    best_k = 8
+    best_score = -1
+
+    for k in range(6, max_k):
+
+        kmeans = KMeans(
+            n_clusters=k,
+            random_state=42,
+            n_init=20
+        )
+
+        labels = kmeans.fit_predict(features)
+
+        score = silhouette_score(features, labels)
+
+        if score > best_score:
+            best_score = score
+            best_k = k
+
+    return best_k
+
+
+# ============================================================
+# DISCOVER STRUCTURAL CLUSTERS
+# ============================================================
+
+def discover_structural_clusters(df):
+
+    features = build_cluster_feature_matrix(df)
+
+    scaler = StandardScaler()
+
+    features_scaled = scaler.fit_transform(features)
+
+    optimal_k = find_optimal_clusters(features_scaled)
+
+    kmeans = KMeans(
+        n_clusters=optimal_k,
+        random_state=42,
+        n_init=30
+    )
+
+    labels = kmeans.fit_predict(features_scaled)
+
+    df = df.copy()
+
+    df["cluster_id"] = labels
+
+    return df, kmeans
+
+
+# ============================================================
+# CLUSTER EXPANSION (CORE IMPROVEMENT)
+# ============================================================
+
+def expand_clusters(df_clustered, ranked_clusters):
+
+    results = []
+
+    used = set()
+
+    for cid in ranked_clusters["cluster_id"]:
+
+        cluster_df = df_clustered[
+            df_clustered["cluster_id"] == cid
+        ].sort_values(
+            "score_norm",
+            ascending=False
+        )
+
+        top_rows = cluster_df.head(TOP_PER_CLUSTER * 2)
+
+        for _, row in top_rows.iterrows():
+
+            combo = tuple(row["combo"])
+
+            if combo in used:
+                continue
+
+            results.append(row)
+
+            used.add(combo)
+
+            if len(results) >= TOP_CLUSTERS * TOP_PER_CLUSTER:
+                break
+
+    return pd.DataFrame(results)
 
 if __name__ == "__main__":
 
