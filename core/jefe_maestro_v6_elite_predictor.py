@@ -1874,92 +1874,101 @@ def main():
 
         abort_no_data(f"Pipeline prerank/expand falló: {e}")
 
-    # 4) Final evaluation
-
-try:
-
-    df_global_top, stats = final_evaluate_and_select(
-        final_candidates,
-        hot_map,
-        pos_map,
-        model_files,
-        top_k=TOP_K
-    )
-
-    # ===============================
-    # MULTI CLUSTER SELECTION LAYER
-    # ===============================
+        # 4) Final evaluation
 
     try:
-        df_global_top = apply_multi_cluster_layer(df_global_top)
-        logger.info("Multi-cluster expansion aplicado correctamente")
-    except Exception as e:
-        logger.warning(f"Multi-cluster layer falló: {e}")
 
-except Exception as e:
-
-        abort_no_data(f"Evaluación final falló: {e}")
-
-               # 5) Save aggregated
-
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        aggregated_fn = os.path.join(
-            RESULTS_DIR,
-            f"aggregated_global_v6_{ts}.json"
+        df_global_top, stats = final_evaluate_and_select(
+            final_candidates,
+            hot_map,
+            pos_map,
+            model_files,
+            top_k=TOP_K
         )
 
-        try:
+    except Exception as e:
+        abort_no_data(f"Evaluación final falló: {e}")
 
-            aggregated_to_save = []
 
-            for _, row in df_global_top.iterrows():
+    # 5) Save aggregated
 
-                aggregated_to_save.append({
-                    "combo_str": " ".join(f"{int(x):02d}" for x in row["combo"]),
-                    "combo": [int(x) for x in row["combo"]],
-                    "global_composite": float(row["global_composite"]),
-                    "suma": int(row["suma"]),
-                    "per_lottery": row.get("per_lottery", {})
-                })
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            with open(aggregated_fn, "w", encoding="utf-8") as f:
+    aggregated_fn = os.path.join(
+        RESULTS_DIR,
+        f"aggregated_global_v6_{ts}.json"
+    )
 
-                json.dump(
-                    {
-                        "aggregated": aggregated_to_save,
-                        "system_info": system_info,
-                        "stats": stats
-                    },
-                    f,
-                    default=safe_json_convert,
-                    ensure_ascii=False,
-                    indent=2
-                )
+    try:
 
-            logger.info(f"Aggregated saved: {aggregated_fn}")
+        aggregated_to_save = []
 
-        except Exception as e:
+        for _, row in df_global_top.iterrows():
 
-            logger.error(f"Error saving aggregated: {e}")
+            aggregated_to_save.append({
+                "combo_str": " ".join(f"{int(x):02d}" for x in row["combo"]),
+                "combo": [int(x) for x in row["combo"]],
+                "global_composite": float(row["global_composite"]),
+                "suma": int(row["suma"]),
+                "per_lottery": row.get("per_lottery", {})
+            })
+
+        with open(aggregated_fn, "w", encoding="utf-8") as f:
+
+            json.dump(
+                {
+                    "aggregated": aggregated_to_save,
+                    "system_info": system_info,
+                    "stats": stats
+                },
+                f,
+                default=safe_json_convert,
+                ensure_ascii=False,
+                indent=2
+            )
+
+        logger.info(f"Aggregated saved: {aggregated_fn}")
+
+    except Exception as e:
+
+        logger.error(f"Error saving aggregated: {e}")
+
 
     # 6) Save predictions history
 
-    save_predictions_global(datetime.now().strftime('%Y-%m-%d'), df_global_top)
+    try:
+
+        save_predictions_global(
+            datetime.now().strftime('%Y-%m-%d'),
+            df_global_top
+        )
+
+    except Exception as e:
+
+        logger.error(f"Error saving prediction history: {e}")
+
 
     # 7) Send email
 
     try:
 
-        send_email_gmail_unified_global(df_global_top, {"system_info": system_info, "stats": stats}, ts)
+        send_email_gmail_unified_global(
+            df_global_top,
+            {"system_info": system_info, "stats": stats},
+            ts
+        )
 
     except Exception as e:
 
         logger.error(f"Error sending final email: {e}")
-
         send_telegram_alert(f"Error sending final email: {e}")
 
+
     logger.info("Proceso completado. Revisa results/ y tu correo.")
+
+
+if __name__ == "__main__":
+    main()
 
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
