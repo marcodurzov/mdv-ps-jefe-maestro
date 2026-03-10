@@ -1814,6 +1814,41 @@ def send_email_gmail_unified_global(aggregated: pd.DataFrame, system_stats: Dict
 
 # ---------- Main orchestration ----------
 
+# ============================================================
+# WRAPPER FOR AUTOMATION
+# ============================================================
+
+def run_model(histories_override=None):
+
+    logger.info("Running model from automation wrapper")
+
+    if histories_override:
+        all_histories = histories_override
+    else:
+        all_histories = load_all_histories_strict()
+
+    model_files = {}
+
+    for name, df in all_histories.items():
+        models = load_or_train_model(df, name)
+        model_files[name] = MODEL_FILE_TEMPLATE.format(name=name)
+
+    final_candidates, hot_map, pos_map = sample_prerank_and_expand(
+        all_histories,
+        model_files,
+        n_prerank=PRERANK_SAMPLES
+    )
+
+    df_global_top, stats = final_evaluate_and_select(
+        final_candidates,
+        hot_map,
+        pos_map,
+        model_files,
+        top_k=TOP_K
+    )
+
+    return df_global_top, stats
+
 def main():
 
     parser = argparse.ArgumentParser(description="Jefe Maestro Elite v6.0 - Global Unified Predictor")
