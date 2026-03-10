@@ -367,44 +367,44 @@ def load_history_strict(name: str) -> pd.DataFrame:
 
 df = df.sort_values(by=df.columns[0]).reset_index(drop=True)
 
-histories[name] = df
+try:
+    df = pd.read_csv(path)
 
-        if df.empty:
-            raise RuntimeError(f"CSV vacío para {name}")
+    if df.empty:
+        raise RuntimeError(f"CSV vacío para {name}")
 
-        df["FUENTE"] = name
+    df["FUENTE"] = name
 
-        if "FECHA" in df.columns:
-            df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
+    if "FECHA" in df.columns:
+        df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
+        df = df.sort_values("FECHA")
 
-        k = LOTTERIES[name]["k"]
+    k = LOTTERIES[name]["k"]
 
-        expected_cols = [f"N{i}" for i in range(1, k + 1)]
+    expected_cols = [f"N{i}" for i in range(1, k + 1)]
 
-        if not all(col in df.columns for col in expected_cols):
-            raise RuntimeError(f"CSV {name} falta columnas esperadas: {expected_cols}")
+    if not all(col in df.columns for col in expected_cols):
+        raise RuntimeError(f"CSV {name} falta columnas esperadas: {expected_cols}")
 
-        df[expected_cols] = df[expected_cols].apply(pd.to_numeric, errors="coerce")
+    df[expected_cols] = df[expected_cols].apply(pd.to_numeric, errors="coerce")
 
-        df = df.dropna(subset=expected_cols)
+    df = df.dropna(subset=expected_cols)
 
-        if df.empty:
-            raise RuntimeError(f"CSV {name} no contiene filas válidas")
+    if df.empty:
+        raise RuntimeError(f"CSV {name} no contiene filas válidas")
 
-        n_max = LOTTERIES[name]["n_max"]
+    n_max = LOTTERIES[name]["n_max"]
 
-        for col in expected_cols:
-            if not df[col].apply(lambda x: 1 <= int(x) <= n_max).all():
-                raise RuntimeError(f"CSV {name} tiene valores fuera de rango en {col}")
+    for col in expected_cols:
+        if not df[col].apply(lambda x: 1 <= int(x) <= n_max).all():
+            raise RuntimeError(f"CSV {name} tiene valores fuera de rango en {col}")
 
-        return df.sort_values("FECHA").reset_index(drop=True)
+    return df.reset_index(drop=True)
 
-    except Exception as e:
-
-        logger.error(f"Error leyendo CSV {name}: {e}")
-        raise
-
-
+except Exception as e:
+    logger.error(f"Error leyendo CSV {name}: {e}")
+    raise
+    
 def load_all_histories_strict():
 
     histories = {}
