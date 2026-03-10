@@ -1,4 +1,4 @@
-from system.database import initialize_database, insert_draw
+from database import initialize_database, insert_draw
 
 import os
 import re
