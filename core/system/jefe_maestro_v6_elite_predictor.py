@@ -350,85 +350,55 @@ def abort_no_data(reason: str):
 
 def load_history_strict(name: str) -> pd.DataFrame:
 
+    file_map = {
+        "Melate": "data/melate.csv",
+        "Revancha": "data/revancha.csv",
+        "Revanchita": "data/revanchita.csv"
+    }
+
+    path = file_map.get(name)
+
+    if not path or not os.path.exists(path):
+        raise RuntimeError(f"Archivo CSV no encontrado para {name}: {path}")
+
     try:
 
-        file_map = {
-            "Melate": "data/melate.csv",
-            "Revancha": "data/revancha.csv",
-            "Revanchita": "data/revanchita.csv"
-        }
-
-        path = file_map.get(name)
-
-        if not path or not os.path.exists(path):
-            raise RuntimeError(f"Archivo CSV no encontrado para {name}: {path}")
-
         df = pd.read_csv(path)
 
-df = df.sort_values(by=df.columns[0]).reset_index(drop=True)
-
-try:
-    df = pd.read_csv(path)
-
-    if df.empty:
-        raise RuntimeError(f"CSV vacío para {name}")
-
-    df["FUENTE"] = name
-
-    if "FECHA" in df.columns:
-        df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
-        df = df.sort_values("FECHA")
-
-    k = LOTTERIES[name]["k"]
-
-    expected_cols = [f"N{i}" for i in range(1, k + 1)]
-
-    if not all(col in df.columns for col in expected_cols):
-        raise RuntimeError(f"CSV {name} falta columnas esperadas: {expected_cols}")
-
-    df[expected_cols] = df[expected_cols].apply(pd.to_numeric, errors="coerce")
-
-    df = df.dropna(subset=expected_cols)
-
-    if df.empty:
-        raise RuntimeError(f"CSV {name} no contiene filas válidas")
-
-    n_max = LOTTERIES[name]["n_max"]
-
-    for col in expected_cols:
-        if not df[col].apply(lambda x: 1 <= int(x) <= n_max).all():
-            raise RuntimeError(f"CSV {name} tiene valores fuera de rango en {col}")
-
-    return df.reset_index(drop=True)
-
-except Exception as e:
-    logger.error(f"Error leyendo CSV {name}: {e}")
-    raise
-    
-def load_all_histories_strict():
-
-    histories = {}
-
-    for name, path in HISTORY_FILES.items():
-
-        if not os.path.exists(path):
-            raise RuntimeError(f"History file not found: {path}")
-
-        df = pd.read_csv(path)
-
-        # ordenar cronológicamente por primera columna
-        df = df.sort_values(by=df.columns[0]).reset_index(drop=True)
-
-        # validación básica
         if df.empty:
-            raise RuntimeError(f"{name} history file is empty")
+            raise RuntimeError(f"CSV vacío para {name}")
 
-        if df.shape[1] < 7:
-            raise RuntimeError(f"{name} dataset malformed")
+        df["FUENTE"] = name
 
-        histories[name] = df
+        if "FECHA" in df.columns:
+            df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
+            df = df.sort_values("FECHA")
 
-    return histories
+        k = LOTTERIES[name]["k"]
+        n_max = LOTTERIES[name]["n_max"]
+
+        expected_cols = [f"N{i}" for i in range(1, k + 1)]
+
+        if not all(col in df.columns for col in expected_cols):
+            raise RuntimeError(f"CSV {name} falta columnas esperadas: {expected_cols}")
+
+        df[expected_cols] = df[expected_cols].apply(pd.to_numeric, errors="coerce")
+
+        df = df.dropna(subset=expected_cols)
+
+        if df.empty:
+            raise RuntimeError(f"CSV {name} no contiene filas válidas")
+
+        for col in expected_cols:
+            if not df[col].apply(lambda x: 1 <= int(x) <= n_max).all():
+                raise RuntimeError(f"CSV {name} tiene valores fuera de rango en {col}")
+
+        return df.reset_index(drop=True)
+
+    except Exception as e:
+
+        logger.error(f"Error leyendo CSV {name}: {e}")
+        raise
 
 # ---------- Feature engineering ----------
 
@@ -668,7 +638,7 @@ def build_supervised_dataset(df_hist: pd.DataFrame, name: str, n_neg: int = 2000
 
         n_pos += 1
 
-    if sum(y) == 0:
+    if sum(labels) == 0:
     logger.warning(f"No positive samples for {name}. Skipping model training.")
     return None, None, None
 
