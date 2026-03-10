@@ -405,24 +405,24 @@ histories[name] = df
         raise
 
 
-def load_all_histories_strict() -> Dict[str, pd.DataFrame]:
+def load_all_histories_strict():
 
-    dfs = {}
+    histories = {}
 
-    for name in LOTTERIES.keys():
+    for name, path in HISTORY_FILES.items():
 
         try:
+            df = pd.read_csv(path)
 
-            df = load_history_strict(name)
-            dfs[name] = df
+            # ordenar cronológicamente
+            df = df.sort_values(by=df.columns[0]).reset_index(drop=True)
 
-            logger.info(f"[{name}] Historial cargado desde CSV: {len(df):,} filas")
+            histories[name] = df
 
         except Exception as e:
+            raise RuntimeError(f"Error loading history for {name}: {e}")
 
-            abort_no_data(f"No se pudo cargar el historial para {name}: {e}")
-
-    return dfs
+    return histories
 
 # ---------- Feature engineering ----------
 
