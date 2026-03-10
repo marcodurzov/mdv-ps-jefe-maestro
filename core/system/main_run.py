@@ -1,4 +1,4 @@
-from system.database import initialize_database, load_history
+from database import initialize_database, load_history
 from jefe_maestro_v6_elite_predictor import run_model
 
 
