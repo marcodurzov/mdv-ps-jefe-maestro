@@ -660,7 +660,8 @@ def build_supervised_dataset(df_hist: pd.DataFrame, name: str, n_neg: int = 2000
 
     if n_pos == 0:
 
-        raise RuntimeError(f"No positive samples for {name}; cannot train")
+        logger.warning(f"No positive samples for {name}. Using fallback mode.")
+    return None, None, None
 
     n_neg = min(n_neg, max(1, n_pos * 2))
 
@@ -781,6 +782,10 @@ def load_or_train_model(df_hist: pd.DataFrame, name: str) -> Dict[str, Any]:
         raise RuntimeError(f"Dataset invalid for {name}")
 
     X, y, meta = build_supervised_dataset(df_hist, name)
+
+    if X is None:
+    logger.warning(f"Skipping training for {name}")
+    return None
 
     if len(y) == 0:
 
