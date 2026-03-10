@@ -2074,10 +2074,9 @@ def expand_clusters(df_clustered, ranked_clusters):
     return pd.DataFrame(results)
 
 def run_model(histories_override=None):
-
-   # ============================================================
+    """
     Wrapper para ejecutar el modelo desde automatización GitHub
-    # ============================================================
+    """
 
     if histories_override is None:
         raise ValueError("Histories must be provided")
