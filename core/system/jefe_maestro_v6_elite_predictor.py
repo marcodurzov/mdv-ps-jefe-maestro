@@ -365,6 +365,10 @@ def load_history_strict(name: str) -> pd.DataFrame:
 
         df = pd.read_csv(path)
 
+df = df.sort_values(by=df.columns[0]).reset_index(drop=True)
+
+histories[name] = df
+
         if df.empty:
             raise RuntimeError(f"CSV vacío para {name}")
 
