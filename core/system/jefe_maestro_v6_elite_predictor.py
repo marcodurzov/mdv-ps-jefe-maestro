@@ -2073,6 +2073,28 @@ def expand_clusters(df_clustered, ranked_clusters):
 
     return pd.DataFrame(results)
 
+def run_model(histories_override=None):
+
+   # ============================================================
+    Wrapper para ejecutar el modelo desde automatización GitHub
+    # ============================================================
+
+    if histories_override is None:
+        raise ValueError("Histories must be provided")
+
+    melate_history = histories_override["Melate"]
+    revancha_history = histories_override["Revancha"]
+    revanchita_history = histories_override["Revanchita"]
+
+    df, stats = jefe_maestro_predict(
+        melate_history,
+        revancha_history,
+        revanchita_history
+    )
+
+    return df, stats
+
+
 if __name__ == "__main__":
 
     try:
