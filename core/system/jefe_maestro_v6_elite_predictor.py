@@ -658,9 +658,8 @@ def build_supervised_dataset(df_hist: pd.DataFrame, name: str, n_neg: int = 2000
 
         n_pos += 1
 
-    if n_pos == 0:
-
-        logger.warning(f"No positive samples for {name}. Using fallback mode.")
+    if sum(y) == 0:
+    logger.warning(f"No positive samples for {name}. Skipping model training.")
     return None, None, None
 
     n_neg = min(n_neg, max(1, n_pos * 2))
