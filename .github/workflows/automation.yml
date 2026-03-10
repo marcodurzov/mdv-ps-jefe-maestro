@@ -20,8 +20,9 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Update lottery CSV files
-        run: python core/system/csv_updater.py
+      - name: Run updater
+        working-directory: core/system
+        run: python csv_updater.py
 
 
   run-model:
@@ -37,5 +38,6 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Run prediction system
-        run: python core/system/main_run.py
+      - name: Run model
+        working-directory: core/system
+        run: python main_run.py
