@@ -411,16 +411,22 @@ def load_all_histories_strict():
 
     for name, path in HISTORY_FILES.items():
 
-        try:
-            df = pd.read_csv(path)
+        if not os.path.exists(path):
+            raise RuntimeError(f"History file not found: {path}")
 
-            # ordenar cronológicamente
-            df = df.sort_values(by=df.columns[0]).reset_index(drop=True)
+        df = pd.read_csv(path)
 
-            histories[name] = df
+        # ordenar cronológicamente por primera columna
+        df = df.sort_values(by=df.columns[0]).reset_index(drop=True)
 
-        except Exception as e:
-            raise RuntimeError(f"Error loading history for {name}: {e}")
+        # validación básica
+        if df.empty:
+            raise RuntimeError(f"{name} history file is empty")
+
+        if df.shape[1] < 7:
+            raise RuntimeError(f"{name} dataset malformed")
+
+        histories[name] = df
 
     return histories
 
