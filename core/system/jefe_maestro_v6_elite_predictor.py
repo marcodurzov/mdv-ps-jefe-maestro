@@ -622,7 +622,7 @@ def build_supervised_dataset(df_hist: pd.DataFrame, name: str, n_neg: int = 2000
 
     n_pos = 0
 
-    for row in dataset:
+   for row in dataset:
 
     try:
         nums = tuple(sorted(int(row[f"N{i}"]) for i in range(1, k + 1)))
