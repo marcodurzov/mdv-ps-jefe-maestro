@@ -625,11 +625,8 @@ def build_supervised_dataset(df_hist: pd.DataFrame, name: str, n_neg: int = 2000
     for row in dataset:
 
     try:
-
-        nums = tuple(sorted(int(row[f"N{i}"]) for i in range(1, k+1)))
-
+        nums = tuple(sorted(int(row[f"N{i}"]) for i in range(1, k + 1)))
     except Exception:
-
         continue
 
     feats.append(
@@ -670,8 +667,8 @@ for _ in range(n_neg):
     feats.append(
         enhanced_combo_features_tuple(
             nums,
-            json.dumps(hot),
-            tuple(json.dumps(p) for p in pos_freq),
+            hot_json,
+            pos_freq_json,
             n_max
         )
     )
