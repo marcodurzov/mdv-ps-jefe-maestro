@@ -624,35 +624,59 @@ def build_supervised_dataset(df_hist: pd.DataFrame, name: str, n_neg: int = 2000
 
     for _, row in df_hist.iterrows():
 
-        try:
+   try:
 
-            nums = tuple(sorted(int(row[f"N{i}"]) for i in range(1, k+1)))
+    nums = tuple(sorted(int(row[f"N{i}"]) for i in range(1, k+1)))
 
-        except Exception:
+except Exception:
 
-            continue
+    continue
 
-        feats.append(enhanced_combo_features_tuple(nums, json.dumps(hot), tuple(json.dumps(p) for p in pos_freq), n_max))
+feats.append(
+    enhanced_combo_features_tuple(
+        nums,
+        json.dumps(hot),
+        tuple(json.dumps(p) for p in pos_freq),
+        n_max
+    )
+)
 
-        labels.append(1)
+labels.append(1)
 
-        n_pos += 1
+n_pos += 1
 
-    if sum(labels) == 0:
+
+labels = np.array(labels)
+
+if sum(labels) == 0:
     logger.warning(f"No positive samples for {name}. Skipping model training.")
-    return None, None, None
+    return None
 
-    n_neg = min(n_neg, max(1, n_pos * 2))
 
-    rng = np.random.default_rng(SEED)
+X = np.array(feats)
+y = labels
 
-    for _ in range(n_neg):
 
-        nums = tuple(sorted(int(x) for x in rng.choice(range(1, n_max+1), k, replace=False)))
+n_neg = min(n_neg, max(1, n_pos * 2))
 
-        feats.append(enhanced_combo_features_tuple(nums, json.dumps(hot), tuple(json.dumps(p) for p in pos_freq), n_max))
+rng = np.random.default_rng(SEED)
 
-        labels.append(0)
+for _ in range(n_neg):
+
+    nums = tuple(
+        sorted(int(x) for x in rng.choice(range(1, n_max + 1), k, replace=False))
+    )
+
+    feats.append(
+        enhanced_combo_features_tuple(
+            nums,
+            json.dumps(hot),
+            tuple(json.dumps(p) for p in pos_freq),
+            n_max
+        )
+    )
+
+    labels.append(0)
 
     # incorporate previous predictions as weak supervision
 
