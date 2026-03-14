@@ -116,6 +116,15 @@ from logging.handlers import RotatingFileHandler
 _HERE     = os.path.dirname(os.path.abspath(__file__))   # core/system/
 _ROOT     = os.path.dirname(os.path.dirname(_HERE))      # raíz del repo
 _DATA_DIR = os.path.join(_ROOT, "data")
+
+# Verificación de seguridad: si la carpeta data/ no existe relativa a _ROOT,
+# intenta encontrarla relativa al directorio de trabajo actual (útil en GitHub Actions).
+if not os.path.isdir(_DATA_DIR):
+    _cwd_data = os.path.join(os.getcwd(), "data")
+    if os.path.isdir(_cwd_data):
+        _DATA_DIR = _cwd_data
+        _ROOT     = os.getcwd()
+        logger.warning(f"data/ no encontrada en ruta relativa, usando: {_DATA_DIR}")
 _CACHE    = os.path.join(_ROOT, "cache")
 _RESULTS  = os.path.join(_ROOT, "results")
 for _d in [_CACHE, _RESULTS]: os.makedirs(_d, exist_ok=True)
@@ -236,7 +245,9 @@ def load_history_strict(name: str) -> pd.DataFrame:
     if not os.path.exists(path):
         raise RuntimeError(f"CSV no encontrado: {path}")
     df = pd.read_csv(path)
-    if df.empty: raise RuntimeError(f"CSV vacío: {name}")
+    if df.empty or len(df) == 0:
+        raise RuntimeError(f"CSV vacío o sin datos: {name} (path: {path})")
+    logger.info(f"[{name}] CSV encontrado en: {path} ({len(df)} filas brutas)")
     if "FECHA" in df.columns:
         df["FECHA"] = pd.to_datetime(df["FECHA"], dayfirst=True, errors="coerce")
     k = LOTTERIES[name]["k"]
@@ -1122,7 +1133,18 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None):
            "--light" in sys.argv)
     logger.info(f"🚀 Jefe Maestro v8.0 Final Supreme "
                 f"(RAM={_RAM_GB:.1f}GB CPUs={_CPUS} light={light})")
-    all_h=histories_override or load_all_histories()
+    # Validar que los historiales pasados no estén vacíos.
+    # Si vienen vacíos desde main_run.py (base de datos sin datos),
+    # se carga directamente desde los CSV.
+    if histories_override:
+        empty = [name for name, df in histories_override.items() if df is None or len(df) == 0]
+        if empty:
+            logger.warning(f"Historiales vacíos recibidos para {empty}. Cargando desde CSV...")
+            all_h = load_all_histories()
+        else:
+            all_h = histories_override
+    else:
+        all_h = load_all_histories()
     # Stats
     stats_all={}
     for name,df in all_h.items():
