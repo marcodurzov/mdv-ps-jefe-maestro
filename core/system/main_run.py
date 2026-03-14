@@ -1,18 +1,11 @@
-from database import initialize_database, load_history
-from jefe_maestro_v6_elite_predictor import run_model
+from system.jefe_maestro_v6_elite_predictor import run_model
 
 
 def main():
-
-    initialize_database()
-
-    histories = {
-        "Melate": load_history("Melate"),
-        "Revancha": load_history("Revancha"),
-        "Revanchita": load_history("Revanchita")
-    }
-
-    df, stats = run_model(histories_override=histories)
+    # Cargamos directamente desde los CSV (fuente de verdad).
+    # La base de datos queda como respaldo opcional pero no se usa
+    # en el pipeline principal para evitar datos sucios.
+    df, stats = run_model()
 
     print("Modelo ejecutado correctamente.")
     print(df.head())
