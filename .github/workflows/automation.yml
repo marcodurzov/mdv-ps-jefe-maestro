@@ -1,43 +1,54 @@
-name: MDV Automation
+name: MDV Jefe Maestro Pipeline
 
 on:
   schedule:
-    - cron: '0 17 * * 1,4,6'
-    - cron: '30 17 * * 1,4,6'
-  workflow_dispatch:
+    # Ajusta estos horarios según tu automation.yml actual
+    - cron: '0 8 * * 3'   # Miércoles
+    - cron: '0 8 * * 5'   # Viernes
+    - cron: '0 8 * * 0'   # Domingo
+  workflow_dispatch:       # Permite correrlo manualmente
+
+permissions:
+  contents: write          # NECESARIO para hacer commit de resultados
 
 jobs:
-
   update-results:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - run: pip install -r requirements.txt
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
 
-      - name: Run updater
-        working-directory: core/system
-        run: python csv_updater.py
+      - name: Actualizar históricos (scraping)
+        run: python core/system/csv_updater.py
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
 
-
-  run-model:
-    runs-on: ubuntu-latest
-    needs: update-results
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - run: pip install -r requirements.txt
-
-      - name: Run model
-        working-directory: core/system
+      - name: Correr Jefe Maestro
         run: python main_run.py
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+
+      - name: Guardar resultados en el repositorio
+        run: |
+          git config user.name  "Jefe Maestro Bot"
+          git config user.email "actions@github.com"
+          git add results/
+          git add predictions_history_v8.json || true
+          git add backtest_history_v8.json    || true
+          git add data/melate.csv data/revancha.csv data/revanchita.csv || true
+          git diff --staged --quiet || git commit -m "🎰 Resultados $(date '+%Y-%m-%d %H:%M') UTC"
+          git push
