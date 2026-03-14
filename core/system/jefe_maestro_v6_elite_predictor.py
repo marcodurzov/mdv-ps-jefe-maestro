@@ -1048,6 +1048,63 @@ def run_pipeline(all_histories:Dict, model_files:Dict, stats_all:Dict, light:boo
                     "light":light,"time_s":time.time()-t0}
 
 # ─────────────────────────────────────────────────────────────────────
+# GESTIÓN DE ALMACENAMIENTO (purga automática al 80%)
+# ─────────────────────────────────────────────────────────────────────
+
+def manage_results_storage(max_mb: float = 400.0):
+    """
+    Revisa el tamaño de la carpeta results/.
+    Si supera el 80% del límite (max_mb), elimina los archivos
+    más antiguos hasta quedar por debajo del límite.
+    Por defecto: límite 400 MB, purga si supera 320 MB.
+    """
+    threshold_bytes = max_mb * 1024 * 1024 * 0.80
+
+    if not os.path.isdir(_RESULTS):
+        return
+
+    # Listar todos los archivos JSON de resultados con su fecha
+    files = []
+    for fname in os.listdir(_RESULTS):
+        if fname.endswith(".json"):
+            fpath = os.path.join(_RESULTS, fname)
+            files.append((os.path.getmtime(fpath), fpath))
+
+    if not files:
+        return
+
+    # Calcular tamaño total
+    total_bytes = sum(os.path.getsize(f[1]) for f in files)
+
+    if total_bytes <= threshold_bytes:
+        logger.info(f"Almacenamiento results/: {total_bytes/1024/1024:.1f} MB / "
+                    f"{max_mb:.0f} MB — OK")
+        return
+
+    logger.warning(f"Almacenamiento results/ al "
+                   f"{total_bytes/threshold_bytes*80:.0f}% — iniciando purga...")
+
+    # Ordenar por fecha (más antiguos primero)
+    files.sort(key=lambda x: x[0])
+
+    deleted = 0
+    for mtime, fpath in files:
+        if total_bytes <= threshold_bytes:
+            break
+        size = os.path.getsize(fpath)
+        try:
+            os.remove(fpath)
+            total_bytes -= size
+            deleted += 1
+            logger.info(f"Purgado: {os.path.basename(fpath)} ({size/1024:.0f} KB)")
+        except Exception as e:
+            logger.warning(f"No se pudo purgar {fpath}: {e}")
+
+    logger.info(f"Purga completada: {deleted} archivo(s) eliminado(s). "
+                f"Almacenamiento actual: {total_bytes/1024/1024:.1f} MB")
+
+
+# ─────────────────────────────────────────────────────────────────────
 # PERSISTENCIA
 # ─────────────────────────────────────────────────────────────────────
 
@@ -1181,6 +1238,8 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None):
         logger.info(f"  [{name}] lift={bt.get('lift',1.):.3f}")
     logger.info("═"*60)
     # Guardar y enviar
+        # Gestión de almacenamiento antes de guardar nuevo resultado
+    manage_results_storage(max_mb=400.0)
     ts=datetime.now().strftime("%Y%m%d_%H%M%S")
     save_predictions(df_top,datetime.now().strftime("%Y-%m-%d"),bt_all)
     out=os.path.join(_RESULTS,f"v8_results_{ts}.json")
