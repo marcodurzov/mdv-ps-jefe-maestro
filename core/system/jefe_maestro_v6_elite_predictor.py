@@ -1,1170 +1,1202 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
 jefe_maestro_v6_elite_predictor.py
-Version: v6.0 Elite Predictor (A4)
+Versión interna: v8.0 Final Supreme
 
-Resumen:
-- Pipeline híbrido en 3 fases: muestreo por importancia (prerank) -> expansión de vecindarios -> evaluación final.
-- Global composite: una sola combinación participa en Melate/Revancha/Revanchita.
-- No se generan datos mock bajo ninguna circunstancia. Si faltan datos reales el programa ABORTA y alerta.
-- Ensamble ML interno con pesos personalizados (ELITE):
-    IF  = 0.15
-    XGB = 0.45
-    LGBM= 0.20
-    LSTM= 0.20
-- Estadística adicional (hot scores, entropy, parity, sum balance) se usan como refinamiento.
-- Multiprocessing Windows-safe (get_context("spawn")), initializer top-level.
-- Logs, alertas por Telegram y Email, guardado de resultados y historial de predicciones.
-- Diseñado para correr eficientemente en una máquina de 4 núcleos.
+ARCHIVO PRINCIPAL DEL PREDICTOR — nombre mantenido para compatibilidad
+con main_run.py y automation.yml del repositorio.
+
+REGLAS DEL SORTEO (importante para entender el código):
+  - El jugador elige 6 números del 1 al 56.
+  - La misma combinación de 6 números participa en los 3 sorteos:
+    Melate, Revancha y Revanchita.
+  - Melate saca 6 bolas principales + 1 BONO adicional (el jugador
+    NO elige el bono, es extra del sorteo). El bono se guarda en CSV
+    pero NO forma parte de la combinación a predecir.
+  - Revancha y Revanchita: solo 6 bolas (N1–N6), sin bono.
+
+MEJORAS INCORPORADAS v6→v8:
+═══════════════════════════════════════════════════════════════════════
+ESTRUCTURA
+  ✓ Nombre correcto: jefe_maestro_v6_elite_predictor.py
+  ✓ CSV Melate: FECHA,N1,N2,N3,N4,N5,N6,BONO
+  ✓ CSV Revancha/Revanchita: FECHA,N1,N2,N3,N4,N5,N6
+  ✓ CSV siempre ordenado: más reciente primero (regla 7)
+  ✓ Rutas relativas correctas (data/ desde raíz del repo)
+
+FEATURES (~70 dimensiones)
+  ✓ Hot multi-ventana: 10 / 30 / 100 / 300 sorteos
+  ✓ Gap analysis (números overdue)
+  ✓ Co-ocurrencias normalizadas vs. esperado uniforme
+  ✓ FFT espectral por número (detección de ciclos)
+  ✓ Distancia KS vs. distribución uniforme
+  ✓ Estructurales: primos, Fibonacci, cuadrados, mult-5
+  ✓ Distribución por tercios
+  ✓ Bono Melate como feature auxiliar
+  ✓ Penalización de combos "humanas" (fechas, secuencias, patrones)
+
+ENSEMBLE
+  ✓ IsolationForest
+  ✓ XGBoost calibrado (Platt)
+  ✓ LightGBM calibrado (Isotonic)
+  ✓ CatBoost calibrado (si disponible, solo modo full)
+  ✓ LSTM mejorado con EarlyStopping (solo modo full + TF)
+  ✓ Meta-learner: HistGradientBoostingClassifier (OOF stacking)
+  ✓ Temperature scaling en composite final
+  ✓ Permutation importance logueado
+
+CANDIDATOS (4 estrategias)
+  ✓ 40% Hot-guided
+  ✓ 25% Gap-guided (overdue)
+  ✓ 10% Co-occurrence-guided (pares frecuentes)
+  ✓ 25% Uniforme (exploración)
+
+PORTFOLIO
+  ✓ Beam search (width=5) + set-cover
+  ✓ Diversidad coseno intra-portfolio
+  ✓ Early stopping (mejora < 0.0005 en 3 iter)
+
+RENDIMIENTO / GITHUB ACTIONS
+  ✓ --light / LIGHT_MODE=true / auto-detect RAM < 4.5 GB
+  ✓ Stats cacheadas en disco (no se recalculan si datos no cambiaron)
+  ✓ Backtest con historial de lift en JSON
+  ✓ Reintentos en email (3 intentos)
+  ✓ Simulated Annealing en expansión de vecindarios
+═══════════════════════════════════════════════════════════════════════
 """
-
 from __future__ import annotations
-import os
-import sys
-import math
-import json
-import time
-import gc
-import logging
-import warnings
-import argparse
-import itertools
-import random
+
+import os, sys, math, json, time, gc, logging, warnings, argparse, random
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 
-# Reduce TF verbosity
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
-# ---------- Imports ----------
 import numpy as np
 import pandas as pd
 import joblib
-from sklearn.ensemble import IsolationForest
-from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
-from sklearn.metrics import make_scorer, roc_auc_score
+import psutil
+from sklearn.ensemble import IsolationForest, HistGradientBoostingClassifier
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.model_selection import TimeSeriesSplit, cross_val_predict
 from sklearn.preprocessing import StandardScaler
+from sklearn.inspection import permutation_importance
 import xgboost as xgb
 import lightgbm as lgb
 
 try:
+    import catboost as cb
+    CATBOOST_AVAILABLE = True
+except Exception:
+    CATBOOST_AVAILABLE = False
+
+try:
     import tensorflow as tf
-    tf.get_logger().setLevel('ERROR')
+    tf.get_logger().setLevel("ERROR")
     from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM, Dense
+    from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
+    from tensorflow.keras.callbacks import EarlyStopping
     TENSORFLOW_AVAILABLE = True
 except Exception:
     TENSORFLOW_AVAILABLE = False
 
-import psutil
 from imblearn.over_sampling import SMOTE, RandomOverSampler
-import requests
-import smtplib
+import requests, smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from multiprocessing import get_context, cpu_count
 from logging.handlers import RotatingFileHandler
 
-# ---------- Logging ----------
+# ─────────────────────────────────────────────────────────────────────
+# RUTAS (compatibles con estructura del repositorio)
+# ─────────────────────────────────────────────────────────────────────
+_HERE     = os.path.dirname(os.path.abspath(__file__))   # core/system/
+_ROOT     = os.path.dirname(os.path.dirname(_HERE))      # raíz del repo
+_DATA_DIR = os.path.join(_ROOT, "data")
+_CACHE    = os.path.join(_ROOT, "cache")
+_RESULTS  = os.path.join(_ROOT, "results")
+for _d in [_CACHE, _RESULTS]: os.makedirs(_d, exist_ok=True)
+
+# ─────────────────────────────────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────────────────────────────────
 warnings.filterwarnings("ignore")
-LOG_FILE = "jefe_maestro_v6_elite.log"
-handler = RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=5, encoding="utf-8")
-stream_handler = logging.StreamHandler(sys.stdout)
+LOG_FILE = os.path.join(_ROOT, "jefe_maestro_v8.log")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[handler, stream_handler]
+    handlers=[
+        RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=5, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
 )
 logger = logging.getLogger(__name__)
 
-# ---------- Configuration ----------
-LOTTERIES = {
-    "Melate": {"n_max": 56, "k": 6, "sheet_key": os.getenv("MELATE_SHEET_KEY", "1C3tA9spKhsJB9sTSwTb3Z2nY_sxLD05EZDZ7SrKuJz4")},
-    "Revancha": {"n_max": 56, "k": 6, "sheet_key": os.getenv("REVANCHA_SHEET_KEY", "1NHmzbhCt4xroSZYPYkVs--IA-yPM7N9WaN36-kAiCLs")},
-    "Revanchita": {"n_max": 56, "k": 6, "sheet_key": os.getenv("REVANCHITA_SHEET_KEY", "1G8o0_DtaQl9JjoDCVtHhNfIfJQXXauBY6MhWPHSD1sU")},
+# ─────────────────────────────────────────────────────────────────────
+# AUTO-DETECT RECURSOS
+# ─────────────────────────────────────────────────────────────────────
+_RAM_GB    = psutil.virtual_memory().total / (1024**3)
+_CPUS      = cpu_count()
+_AUTO_LIGHT = _RAM_GB < 4.5
+
+# ─────────────────────────────────────────────────────────────────────
+# CONFIGURACIÓN DE SORTEOS
+# ─────────────────────────────────────────────────────────────────────
+LOTTERIES: Dict[str, Dict] = {
+    "Melate":     {"n_max": 56, "k": 6, "has_bono": True},
+    "Revancha":   {"n_max": 56, "k": 6, "has_bono": False},
+    "Revanchita": {"n_max": 56, "k": 6, "has_bono": False},
 }
 
-MODEL_FILE_TEMPLATE = "model_{name}.joblib"
-PREDICTIONS_HISTORY_FILE = "predictions_history.json"
-HDF_CACHE = "cache/histories.h5"
+MODEL_FILE_TPL      = os.path.join(_CACHE, "model_v8_{name}.joblib")
+STATS_FILE_TPL      = os.path.join(_CACHE, "stats_v8_{name}.joblib")
+PREDICTIONS_HISTORY = os.path.join(_ROOT,  "predictions_history_v8.json")
+BACKTEST_HISTORY    = os.path.join(_ROOT,  "backtest_history_v8.json")
 
-# Elite ensemble weights (A4 - Elite Predictor)
-ALPHA_IF = 0.15
-BETA_XGB = 0.45
-BETA_LGBM = 0.20
-# LSTM weight = 1.0 - (ALPHA_IF + BETA_XGB + BETA_LGBM) = 0.20
+# ── Pesos ensemble fallback ──────────────────────────────────────────
+W_IF   = 0.10
+W_XGB  = 0.35
+W_LGBM = 0.20
+W_CB   = 0.15
+W_LSTM = 0.20
 
-# Statistical refinement weights (small)
-GAMMA_HOT = 0.06
-DELTA_ENT = 0.06
-EPS_PAR = 0.04
-ZETA_SUM = 0.04
+# ── Refinamiento estadístico ─────────────────────────────────────────
+GAMMA_HOT  = 0.06
+DELTA_KS   = 0.05
+EPS_PAR    = 0.04
+ZETA_SUM   = 0.04
+ETA_GAP    = 0.06
+THETA_COV  = 0.05
+IOTA_HUM   = 0.08   # penalización combos "humanas"
+
 ALPHA_DECAY = 0.95
+SEED        = int(os.getenv("JM_SEED", "42"))
+np.random.seed(SEED); random.seed(SEED)
 
-SEED = int(os.getenv("JM_SEED", "42"))
-np.random.seed(SEED)
-random.seed(SEED)
+TOP_K   = int(os.getenv("JM_TOP_K", "20"))
+WORKERS = int(os.getenv("JM_WORKERS", str(max(1, min(4, _CPUS)))))
 
-TOP_K = int(os.getenv("JM_TOP_K", "20"))
-WORKERS = int(os.getenv("JM_WORKERS", str(max(1, min(4, cpu_count())))))
+_PRERANK_FULL  = 160_000;  _TARGET_FULL  = 2_000_000; _NEIGH_FULL  = 25
+_PRERANK_LIGHT =  40_000;  _TARGET_LIGHT =   500_000; _NEIGH_LIGHT = 15
+PRERANK_TOP    = int(os.getenv("PRERANK_TOP", "30000"))
 
-# Candidate sampling & expansion targets (tunable)
-PRERANK_SAMPLES = int(os.getenv("PRERANK_SAMPLES", "160000"))
-PRERANK_TOP = int(os.getenv("PRERANK_TOP", "50000"))
-NEIGHBORS_PER_COMBO = int(os.getenv("NEIGHBORS_PER_COMBO", "20"))
-TARGET_EVAL = int(os.getenv("TARGET_EVAL", "2000000"))
+MIN_SUM = 60; MAX_SUM = 300; MAX_CONSEC = 4
 
-# Plausibility filters (safe ranges)
-MIN_SUM_ALLOWED = 60
-MAX_SUM_ALLOWED = 300
-MAX_CONSECUTIVE_ALLOWED = 4
-
-# Email & Telegram
-EMAIL_FROM = os.getenv("EMAIL_USER")
-EMAIL_PASS = os.getenv("EMAIL_PASS")
-EMAIL_TO = os.getenv("EMAIL_TO") or EMAIL_FROM
+EMAIL_FROM  = os.getenv("EMAIL_USER")
+EMAIL_PASS  = os.getenv("EMAIL_PASS")
+EMAIL_TO    = os.getenv("EMAIL_TO") or EMAIL_FROM
 SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
+SMTP_PORT   = 587
 
-# Directories
-RESULTS_DIR = "results"
-os.makedirs(RESULTS_DIR, exist_ok=True)
-os.makedirs(os.path.dirname(HDF_CACHE), exist_ok=True)
+# Pesos por pozo acumulado (opcionales)
+_POT       = {n: float(os.getenv(f"POT_{n.upper()}", "1.0")) for n in LOTTERIES}
+_PT        = sum(_POT.values()) or 1.0
+POT_WEIGHTS = {n: _POT[n] / _PT for n in LOTTERIES}
 
-# Globals for worker processes
-WORKER_MODELS: Dict[str, Dict[str, Any]] = {}
-WORKER_SCALERS: Dict[str, Any] = {}
-WORKER_NAMES: List[str] = []
+# Globals de workers
+WORKER_MODELS:  Dict = {}
+WORKER_SCALERS: Dict = {}
+WORKER_STATS:   Dict = {}
+WORKER_NAMES:   List = []
+WORKER_LIGHT:   bool = False
 
-# ---------- Utilities & Alerts ----------
-def safe_json_convert(obj):
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, (np.ndarray,)):
-        return obj.tolist()
-    if isinstance(obj, (pd.Timestamp,)):
-        return obj.isoformat()
-    if isinstance(obj, (pd.Series,)):
-        return obj.tolist()
+# ─────────────────────────────────────────────────────────────────────
+# UTILIDADES
+# ─────────────────────────────────────────────────────────────────────
+
+def safe_json(obj):
+    if isinstance(obj, (np.integer,)):  return int(obj)
+    if isinstance(obj, (np.floating,)): return float(obj)
+    if isinstance(obj, np.ndarray):     return obj.tolist()
+    if isinstance(obj, pd.Timestamp):   return obj.isoformat()
+    if isinstance(obj, pd.Series):      return obj.tolist()
     return obj
 
-def send_telegram_alert(message: str):
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat = os.getenv("TELEGRAM_CHAT_ID")
-    if token and chat:
+def send_telegram(msg: str):
+    tok = os.getenv("TELEGRAM_TOKEN"); chat = os.getenv("TELEGRAM_CHAT_ID")
+    if tok and chat:
+        try: requests.post(f"https://api.telegram.org/bot{tok}/sendMessage",
+                           json={"chat_id": chat, "text": msg}, timeout=10)
+        except Exception: pass
+
+def _norm(arr: np.ndarray) -> np.ndarray:
+    a = np.nan_to_num(arr.astype(np.float32), nan=0., posinf=0., neginf=0.)
+    mn, mx = a.min(), a.max()
+    return np.zeros_like(a) if mx-mn < 1e-12 else (a-mn)/(mx-mn+1e-12)
+
+# ─────────────────────────────────────────────────────────────────────
+# CARGA DE DATOS
+# ─────────────────────────────────────────────────────────────────────
+
+def load_history_strict(name: str) -> pd.DataFrame:
+    path = os.path.join(_DATA_DIR, f"{name.lower()}.csv")
+    if not os.path.exists(path):
+        raise RuntimeError(f"CSV no encontrado: {path}")
+    df = pd.read_csv(path)
+    if df.empty: raise RuntimeError(f"CSV vacío: {name}")
+    if "FECHA" in df.columns:
+        df["FECHA"] = pd.to_datetime(df["FECHA"], dayfirst=True, errors="coerce")
+    k = LOTTERIES[name]["k"]
+    has_b = LOTTERIES[name]["has_bono"]
+    num_cols = [f"N{i}" for i in range(1, k+1)]
+    if not all(c in df.columns for c in num_cols):
+        raise RuntimeError(f"Columnas faltantes en {name}: {num_cols}")
+    df[num_cols] = df[num_cols].apply(pd.to_numeric, errors="coerce")
+    df = df.dropna(subset=num_cols)
+    n_max = LOTTERIES[name]["n_max"]
+    for col in num_cols:
+        if not df[col].between(1, n_max).all():
+            raise RuntimeError(f"Valores fuera de rango en {name}.{col}")
+    if has_b:
+        if "BONO" in df.columns:
+            df["BONO"] = pd.to_numeric(df["BONO"], errors="coerce")
+        else:
+            df["BONO"] = np.nan
+    # Ordenar: más reciente primero (regla 7)
+    df = df.sort_values("FECHA", ascending=False).reset_index(drop=True)
+    df["FUENTE"] = name
+    return df
+
+def load_all_histories() -> Dict[str, pd.DataFrame]:
+    dfs = {}
+    for name in LOTTERIES:
         try:
-            url = f"https://api.telegram.org/bot{token}/sendMessage"
-            payload = {"chat_id": chat, "text": message}
-            requests.post(url, json=payload, timeout=10)
-            logger.info("Telegram alert sent")
+            dfs[name] = load_history_strict(name)
+            logger.info(f"[{name}] {len(dfs[name]):,} sorteos cargados")
         except Exception as e:
-            logger.error(f"Error sending Telegram alert: {e}")
+            _abort(f"No se pudo cargar {name}: {e}")
+    return dfs
 
-def send_email_alert(subject: str, body: str):
-    if not EMAIL_FROM or not EMAIL_PASS or not EMAIL_TO:
-        logger.warning("Email credentials not set - skipping alert email")
-        return False
-    msg = MIMEMultipart()
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_FROM
-    msg["To"] = EMAIL_TO
-    msg.attach(MIMEText(body, "plain"))
-    try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(EMAIL_FROM, EMAIL_PASS)
-            server.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
-        logger.info("Alert email sent")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send alert email: {e}")
-        return False
-
-def abort_no_data(reason: str):
+def _abort(reason: str):
     logger.critical(f"ABORT: {reason}")
-    send_telegram_alert(f"Jefe Maestro - ABORT: {reason}")
-    send_email_alert("Jefe Maestro - ABORT: datos insuficientes", f"Se abortó la ejecución por: {reason}\nRevisa logs en {LOG_FILE}")
+    send_telegram(f"Jefe Maestro v8 ABORT: {reason}")
     sys.exit(2)
 
-# ---------- Local CSV loader (strict) ----------
-def load_history_strict(name: str) -> pd.DataFrame:
-    file_map = {
-        "Melate": "data/melate.csv",
-        "Revancha": "data/revancha.csv",
-        "Revanchita": "data/revanchita.csv"
-    }
-    path = file_map.get(name)
-    if not path or not os.path.exists(path):
-        raise RuntimeError(f"Archivo CSV no encontrado para {name}: {path}")
-    try:
-        df = pd.read_csv(path)
-        if df.empty:
-            raise RuntimeError(f"CSV vacío para {name}")
-        df["FUENTE"] = name
-        if "FECHA" in df.columns:
-            df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce")
-            df = df.sort_values("FECHA")
-        
-        k = LOTTERIES[name]["k"]
-        n_max = LOTTERIES[name]["n_max"]
-        expected_cols = [f"N{i}" for i in range(1, k + 1)]
-        
-        if not all(col in df.columns for col in expected_cols):
-            raise RuntimeError(f"CSV {name} falta columnas esperadas: {expected_cols}")
-            
-        df[expected_cols] = df[expected_cols].apply(pd.to_numeric, errors="coerce")
-        df = df.dropna(subset=expected_cols)
-        
-        if df.empty:
-            raise RuntimeError(f"CSV {name} no contiene filas válidas")
-            
-        for col in expected_cols:
-            if not df[col].apply(lambda x: 1 <= int(x) <= n_max).all():
-                raise RuntimeError(f"CSV {name} tiene valores fuera de rango en {col}")
-                
-        return df.reset_index(drop=True)
-    except Exception as e:
-        logger.error(f"Error leyendo CSV {name}: {e}")
-        raise
+# ─────────────────────────────────────────────────────────────────────
+# NÚMEROS ESTRUCTURALES
+# ─────────────────────────────────────────────────────────────────────
 
-def load_all_histories_strict() -> Dict[str, pd.DataFrame]:
-    histories = {}
-    for name in LOTTERIES.keys():
-        histories[name] = load_history_strict(name)
-    return histories
+def _primes(n):
+    s=[True]*(n+1); s[0]=s[1]=False
+    for i in range(2,int(n**.5)+1):
+        if s[i]:
+            for j in range(i*i,n+1,i): s[j]=False
+    return frozenset(i for i in range(2,n+1) if s[i])
 
-# ---------- Feature engineering ----------
-@lru_cache(maxsize=400000)
-def combo_basic_features_tuple(nums: Tuple[int, ...], n_max: int) -> Tuple[float, ...]:
-    nums = tuple(sorted(int(x) for x in nums))
-    s = float(sum(nums))
-    uniq = float(len(set(nums)))
-    evens = float(sum(1 for n in nums if n % 2 == 0))
-    rng = float(max(nums) - min(nums)) if nums else 0.0
-    last_digits = [n % 10 for n in nums]
-    counts = {}
-    for d in last_digits:
-        counts[d] = counts.get(d, 0) + 1
-    total_ld = sum(counts.values())
-    entropy = 0.0
-    for v in counts.values():
-        p = v / (total_ld + 1e-12)
-        entropy -= p * math.log2(p + 1e-12)
-    consecutive = float(sum(1 for i in range(len(nums)-1) if nums[i+1] == nums[i] + 1))
-    std = float(np.std(nums))
-    diffs = np.diff(nums) if len(nums) > 1 else np.array([0])
-    min_dist = float(diffs.min()) if diffs.size > 0 else 0.0
-    max_dist = float(diffs.max()) if diffs.size > 0 else 0.0
-    bins = np.histogram(nums, bins=max(1, math.ceil(n_max/10)), range=(1, n_max+1))[0]
-    decenas_norm = bins / (bins.sum() + 1e-9)
-    decenas_entropy = 0.0
-    for p in decenas_norm:
-        if p > 0:
-            decenas_entropy -= p * math.log2(p + 1e-12)
-    return (s, uniq, evens, rng, entropy, consecutive, std, min_dist, max_dist, decenas_entropy)
+def _fibs(n):
+    r,a,b=set(),1,1
+    while a<=n: r.add(a); a,b=b,a+b
+    return frozenset(r)
 
-def build_hot_freq(df_hist: pd.DataFrame, last_k: int = 50, k: int = 6) -> Dict[str, float]:
-    tail = df_hist.tail(last_k)
-    if tail.empty:
-        return {}
-    freq: Dict[int, float] = {}
-    for idx, (_, row) in enumerate(reversed(list(tail.iterrows()))):
-        w = ALPHA_DECAY ** idx
-        for i in range(1, k+1):
-            col = f"N{i}"
-            if col in row and pd.notna(row[col]):
-                n = int(row[col])
-                freq[n] = freq.get(n, 0.0) + w
-    total = sum(freq.values())
-    if total > 0:
-        for n in list(freq.keys()):
-            freq[n] /= total
-    return {str(k): float(v) for k, v in freq.items()}
+PRIMES56 = _primes(56)
+FIBS56   = _fibs(56)
+SQRS56   = frozenset(i*i for i in range(1,8))
 
-def build_pos_freq(df_hist: pd.DataFrame, k: int) -> List[Dict[str, float]]:
+def _is_date_like(nums: tuple) -> bool:
+    return sum(1 for n in nums if n<=31)>=4 and sum(1 for n in nums if n<=12)>=2
+
+# ─────────────────────────────────────────────────────────────────────
+# ESTADÍSTICAS HISTÓRICAS
+# ─────────────────────────────────────────────────────────────────────
+
+def _build_stats(df: pd.DataFrame, name: str) -> Dict:
+    k       = LOTTERIES[name]["k"]
+    n_max   = LOTTERIES[name]["n_max"]
+    has_b   = LOTTERIES[name]["has_bono"]
+    n       = len(df)
+    ncols   = [f"N{i}" for i in range(1, k+1)]
+    df_asc  = df.iloc[::-1].reset_index(drop=True)  # asc para cálculos
+
+    # ── Hot multi-ventana (df está desc → head = más reciente) ────
+    mw: Dict[int, Dict[int,float]] = {}
+    for w in [10, 30, 100, 300]:
+        freq: Dict[int,float] = {}
+        for idx, (_, row) in enumerate(df.head(w).iterrows()):
+            wt = ALPHA_DECAY**idx
+            for c in ncols:
+                if pd.notna(row.get(c)):
+                    num = int(row[c]); freq[num] = freq.get(num,0.)+wt
+        tot = sum(freq.values()) or 1.
+        mw[w] = {nm: v/tot for nm,v in freq.items()}
+
+    # ── Gap ───────────────────────────────────────────────────────
+    last_seen = {nm: -1 for nm in range(1, n_max+1)}
+    for idx,(_, row) in enumerate(df_asc.iterrows()):
+        for c in ncols:
+            if pd.notna(row.get(c)): last_seen[int(row[c])] = idx
+    exp_g = n_max / k
+    gap = {nm: (float(n)/exp_g if last_seen[nm]==-1
+                else float(n-1-last_seen[nm])/exp_g)
+           for nm in range(1, n_max+1)}
+
+    # ── Co-ocurrencias ────────────────────────────────────────────
+    cooc = np.zeros((n_max+1, n_max+1), dtype=np.float32)
+    bono_cooc: Dict[int,float] = {}
+    for _,(_, row) in enumerate(df_asc.iterrows()):
+        nums = [int(row[c]) for c in ncols if pd.notna(row.get(c))]
+        for a in range(len(nums)):
+            for b in range(a+1, len(nums)):
+                cooc[nums[a],nums[b]]+=1; cooc[nums[b],nums[a]]+=1
+        if has_b and "BONO" in row and pd.notna(row["BONO"]):
+            bv=int(row["BONO"])
+            for nm in nums: bono_cooc[nm]=bono_cooc.get(nm,0.)+1.
+    exp_c = 2*n*k*(k-1)/(n_max*(n_max-1)) or 1e-9
+    cooc_norm = cooc/(exp_c+1e-9)
+    cooc_d: Dict[str,float] = {}
+    for i in range(1,n_max+1):
+        for j in range(i+1,n_max+1):
+            v=float(cooc_norm[i,j])
+            if abs(v-1.)>0.05: cooc_d[f"{i}_{j}"]=v
+
+    # ── KS ────────────────────────────────────────────────────────
+    cnt = np.zeros(n_max+1, dtype=np.int32)
+    for _,(_, row) in enumerate(df_asc.iterrows()):
+        for c in ncols:
+            if pd.notna(row.get(c)): cnt[int(row[c])]+=1
+    tot_c = cnt[1:].sum() or 1
+    ep    = 1./n_max
+    ks    = {nm: abs(cnt[nm]/tot_c-ep)/(ep+1e-9) for nm in range(1,n_max+1)}
+
+    # ── FFT espectral ─────────────────────────────────────────────
+    spectral: Dict[int,float] = {}
+    for nm in range(1, n_max+1):
+        series = np.zeros(n, dtype=np.float32)
+        for idx,(_, row) in enumerate(df_asc.iterrows()):
+            for c in ncols:
+                if pd.notna(row.get(c)) and int(row[c])==nm: series[idx]=1.
+        if series.sum()>0:
+            fft_v = np.abs(np.fft.rfft(series-series.mean()))
+            spectral[nm] = float(fft_v[1:].max()) if len(fft_v)>1 else 0.
+        else:
+            spectral[nm] = 0.
+    mx_s = max(spectral.values()) or 1.
+    spectral = {nm: v/mx_s for nm,v in spectral.items()}
+
+    # ── Posición frecuencia ───────────────────────────────────────
     pos_freq = [{} for _ in range(k)]
-    n_rows = len(df_hist)
-    for idx, (_, row) in enumerate(df_hist.iterrows()):
-        w = ALPHA_DECAY ** (n_rows - idx - 1)
+    for idx,(_, row) in enumerate(df_asc.iterrows()):
+        wt = ALPHA_DECAY**(n-idx-1)
         for i in range(k):
-            col = f"N{i+1}"
-            if col in row and pd.notna(row[col]):
-                n = int(row[col])
-                pos_freq[i][n] = pos_freq[i].get(n, 0.0) + w
+            c=f"N{i+1}"
+            if pd.notna(row.get(c)):
+                nm=int(row[c]); pos_freq[i][nm]=pos_freq[i].get(nm,0.)+wt
     for p in pos_freq:
-        total = sum(p.values())
-        if total > 0:
-            for n in list(p.keys()):
-                p[n] /= total
-    return [{str(k): float(v) for k, v in p.items()} for p in pos_freq]
+        tot=sum(p.values()) or 1.
+        for nm in p: p[nm]/=tot
 
-@lru_cache(maxsize=400000)
-def enhanced_combo_features_tuple(nums: Tuple[int, ...], hot_freq_json: str, pos_freq_jsons: Tuple[str, ...], n_max: int) -> Tuple[float, ...]:
-    base = combo_basic_features_tuple(nums, n_max)
-    try:
-        hot_freq = json.loads(hot_freq_json) if hot_freq_json else {}
-    except Exception:
-        hot_freq = {}
-    try:
-        pos_list = [json.loads(p) for p in pos_freq_jsons] if pos_freq_jsons else [{} for _ in range(len(nums))]
-    except Exception:
-        pos_list = [{} for _ in range(len(nums))]
-        
-    hot_score = sum(float(hot_freq.get(str(n), 0.0)) for n in nums)
-    pos_score_vals = [float(pos_list[i].get(str(nums[i]), 0.0)) if i < len(pos_list) else 0.0 for i in range(len(nums))]
-    pos_score = float(np.mean(pos_score_vals)) if pos_score_vals else 0.0
-    return tuple(list(base) + [hot_score, pos_score])
+    # ── Bono freq ─────────────────────────────────────────────────
+    bono_freq: Dict[int,float] = {}
+    if has_b:
+        for _,(_, row) in enumerate(df.head(50).iterrows()):
+            if "BONO" in row and pd.notna(row["BONO"]):
+                bv=int(row["BONO"]); bono_freq[bv]=bono_freq.get(bv,0.)+1.
+        tot_b=sum(bono_freq.values()) or 1.
+        bono_freq={nm: v/tot_b for nm,v in bono_freq.items()}
 
-# ---------- Model training/loading ----------
-def load_predictions_history():
-    try:
-        if os.path.exists(PREDICTIONS_HISTORY_FILE):
-            with open(PREDICTIONS_HISTORY_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return {}
-    except Exception as e:
-        logger.error(f"Error loading predictions history: {e}")
-        return {}
+    return {
+        "hot10":     {str(k):v for k,v in mw[10].items()},
+        "hot30":     {str(k):v for k,v in mw[30].items()},
+        "hot100":    {str(k):v for k,v in mw[100].items()},
+        "hot300":    {str(k):v for k,v in mw[300].items()},
+        "gap":       {str(k):v for k,v in gap.items()},
+        "ks":        {str(k):v for k,v in ks.items()},
+        "spectral":  {str(k):v for k,v in spectral.items()},
+        "pos":       [{str(k):v for k,v in p.items()} for p in pos_freq],
+        "cooc":      cooc_d,
+        "bono_freq": {str(k):v for k,v in bono_freq.items()},
+        "n_draws":   n,
+    }
 
-def tune_model(model, X: np.ndarray, y: np.ndarray, param_grid: Dict, is_if: bool = False):
-    try:
-        n_splits = max(2, min(4, max(2, len(X)//10)))
-        tscv = TimeSeriesSplit(n_splits=n_splits)
-        scorer = make_scorer(roc_auc_score, greater_is_better=not is_if)
-        gs = GridSearchCV(model, param_grid, cv=tscv, scoring=scorer, n_jobs=1, error_score=0)
-        gs.fit(X, y)
-        logger.info(f"Best params: {gs.best_params_}, score: {gs.best_score_:.3f}")
-        return gs.best_estimator_
-    except Exception as e:
+def load_or_build_stats(df: pd.DataFrame, name: str) -> Dict:
+    sf = STATS_FILE_TPL.format(name=name)
+    n  = len(df)
+    if os.path.exists(sf):
         try:
-            logger.warning(f"Tuning failed ({e}), fitting default model")
-            return model.fit(X, y)
-        except Exception as e2:
-            logger.error(f"Model fit failed: {e2}")
-            return model
+            c = joblib.load(sf)
+            if c.get("n_draws") == n:
+                logger.info(f"[{name}] Stats desde caché"); return c
+        except Exception: pass
+    logger.info(f"[{name}] Calculando stats ({n} draws)...")
+    t0 = time.time()
+    s  = _build_stats(df, name)
+    try: joblib.dump(s, sf)
+    except Exception as e: logger.warning(f"No se guardó stats caché: {e}")
+    logger.info(f"[{name}] Stats en {time.time()-t0:.1f}s")
+    return s
 
-def build_supervised_dataset(df_hist: pd.DataFrame, name: str, n_neg: int = 2000):
-    k = LOTTERIES[name]["k"]
-    hot = build_hot_freq(df_hist, k=k)
-    pos_freq = build_pos_freq(df_hist, k)
-    n_max = LOTTERIES[name]["n_max"]
-    history = load_predictions_history()
+# ─────────────────────────────────────────────────────────────────────
+# FEATURE ENGINEERING (~70 features)
+# ─────────────────────────────────────────────────────────────────────
 
+@lru_cache(maxsize=600_000)
+def combo_features(
+    nums: Tuple[int,...], n_max: int,
+    h10:str, h30:str, h100:str, h300:str,
+    gap_j:str, ks_j:str, sp_j:str,
+    pos_j:str, cooc_j:str, bono_j:str,
+) -> Tuple[float,...]:
+    nums = tuple(sorted(int(x) for x in nums))
+    k    = len(nums)
+    feats: List[float] = []
+
+    # G1: Básicas (11)
+    s   = float(sum(nums)); ev = float(sum(1 for n in nums if n%2==0))
+    rng = float(max(nums)-min(nums)); std = float(np.std(nums))
+    dif = np.diff(nums)
+    md  = float(dif.min()) if dif.size else 0.
+    xd  = float(dif.max()) if dif.size else 0.
+    ld  = [n%10 for n in nums]; dc={}
+    for d in ld: dc[d]=dc.get(d,0)+1
+    le  = sum(-p/k*math.log2(p/k+1e-12) for p in dc.values())
+    cons=1; mr=1
+    for i in range(k-1):
+        if nums[i+1]==nums[i]+1: cons+=1; mr=max(mr,cons)
+        else: cons=1
+    bins=np.histogram(nums,bins=max(1,math.ceil(n_max/10)),range=(1,n_max+1))[0]
+    bn=bins/(bins.sum()+1e-9)
+    de=float(-sum(p*math.log2(p+1e-12) for p in bn if p>0))
+    ds=float(sum(int(d) for n in nums for d in str(n)))
+    feats+=[s,ev,rng,std,md,xd,le,float(mr),de,ds,
+            float(np.var(dif)) if dif.size else 0.]
+
+    # G2: Tercios (6)
+    th=n_max/3.; lo=float(sum(1 for n in nums if n<=th))
+    mi=float(sum(1 for n in nums if th<n<=2*th))
+    hi=float(sum(1 for n in nums if n>2*th))
+    feats+=[lo,mi,hi,abs(lo-k/3.),abs(mi-k/3.),abs(hi-k/3.)]
+
+    # G3: Estructurales (4)
+    feats+=[float(sum(1 for n in nums if n in PRIMES56)),
+            float(sum(1 for n in nums if n in FIBS56)),
+            float(sum(1 for n in nums if n in SQRS56)),
+            float(sum(1 for n in nums if n%5==0))]
+
+    # G4: Parity & balance (4)
+    mn_s=sum(range(1,k+1)); mx_s=sum(range(n_max-k+1,n_max+1))
+    dn=(mx_s-mn_s) or 1.
+    feats+=[1.-abs(ev-k/2.)/(k/2.+1e-9),
+            1.-abs(s-(mn_s+mx_s)/2.)/dn,
+            s/n_max, s/(k*n_max)]
+
+    # G5: Penalización humana (3)
+    max_mult=max(sum(1 for n in nums if n%f==0) for f in range(2,8))
+    feats+=[float(mr>=5), float(_is_date_like(nums)), float(max_mult>=4)]
+
+    # G6: Hot multi-ventana (4)
+    try: hd10=json.loads(h10)  if h10  else {}
+    except: hd10={}
+    try: hd30=json.loads(h30)  if h30  else {}
+    except: hd30={}
+    try: hd100=json.loads(h100) if h100 else {}
+    except: hd100={}
+    try: hd300=json.loads(h300) if h300 else {}
+    except: hd300={}
+    feats+=[sum(float(hd10.get(str(n),0.))  for n in nums),
+            sum(float(hd30.get(str(n),0.))  for n in nums),
+            sum(float(hd100.get(str(n),0.)) for n in nums),
+            sum(float(hd300.get(str(n),0.)) for n in nums)]
+
+    # G7: Gap (3)
+    try: gd=json.loads(gap_j) if gap_j else {}
+    except: gd={}
+    gv=[float(gd.get(str(n),1.)) for n in nums]
+    feats+=[float(np.mean(gv)),float(np.max(gv)),float(np.min(gv))]
+
+    # G8: KS (3)
+    try: kd=json.loads(ks_j) if ks_j else {}
+    except: kd={}
+    kv=[float(kd.get(str(n),0.)) for n in nums]
+    feats+=[float(np.mean(kv)),float(np.max(kv)),float(np.sum(kv))]
+
+    # G9: Espectral (3)
+    try: sd=json.loads(sp_j) if sp_j else {}
+    except: sd={}
+    sv=[float(sd.get(str(n),0.)) for n in nums]
+    feats+=[float(np.mean(sv)),float(np.max(sv)),float(np.sum(sv))]
+
+    # G10: Co-ocurrencias (3)
+    try: cd=json.loads(cooc_j) if cooc_j else {}
+    except: cd={}
+    pairs=[float(cd.get(f"{min(a,b)}_{max(a,b)}",1.))
+           for i,a in enumerate(nums) for b in nums[i+1:]]
+    feats+=[float(np.mean(pairs)) if pairs else 1.,
+            float(np.max(pairs))  if pairs else 1.,
+            float(np.min(pairs))  if pairs else 1.]
+
+    # G11: Posición (k features)
+    try: pl=json.loads(pos_j) if pos_j else []
+    except: pl=[]
+    for i in range(k):
+        p=pl[i] if i<len(pl) else {}
+        feats.append(float(p.get(str(nums[i]),0.)))
+
+    # G12: Bono (2)
+    try: bd=json.loads(bono_j) if bono_j else {}
+    except: bd={}
+    bvs=[float(bd.get(str(n),0.)) for n in nums]
+    feats+=[float(np.mean(bvs)),float(np.max(bvs))]
+
+    # G13: Diffs avanzadas (4)
+    feats+=[float(np.std(dif))    if dif.size else 0.,
+            float(np.median(dif)) if dif.size else 0.,
+            float(sum(1 for d in dif if d>10)),
+            float(sum(1 for d in dif if d==1))]
+
+    return tuple(float(x) for x in feats)
+
+def _stats_args(stats: Dict) -> tuple:
+    return (json.dumps(stats.get("hot10",{})),
+            json.dumps(stats.get("hot30",{})),
+            json.dumps(stats.get("hot100",{})),
+            json.dumps(stats.get("hot300",{})),
+            json.dumps(stats.get("gap",{})),
+            json.dumps(stats.get("ks",{})),
+            json.dumps(stats.get("spectral",{})),
+            json.dumps(stats.get("pos",[])),
+            json.dumps(stats.get("cooc",{})),
+            json.dumps(stats.get("bono_freq",{})))
+
+def get_features(nums: tuple, stats: Dict, n_max: int) -> tuple:
+    return combo_features(nums, n_max, *_stats_args(stats))
+
+# ─────────────────────────────────────────────────────────────────────
+# DATASET SUPERVISADO
+# ─────────────────────────────────────────────────────────────────────
+
+def build_dataset(df: pd.DataFrame, name: str, stats: Dict):
+    k     = LOTTERIES[name]["k"]; n_max = LOTTERIES[name]["n_max"]
+    ncols = [f"N{i}" for i in range(1,k+1)]
     feats, labels = [], []
-    n_pos = 0
-
-    hot_json = json.dumps(hot)
-    pos_freq_json = tuple(json.dumps(p) for p in pos_freq)
-
-    for _, row in df_hist.iterrows():
+    for _,(_, row) in enumerate(df.iloc[::-1].iterrows()):
         try:
-            nums = tuple(sorted(int(row[f"N{i}"]) for i in range(1, k + 1)))
+            nums=tuple(sorted(int(row[c]) for c in ncols))
+            feats.append(get_features(nums,stats,n_max)); labels.append(1)
+        except Exception: continue
+    n_pos=sum(labels)
+    if n_pos==0: raise RuntimeError(f"Sin muestras positivas {name}")
+    rng=np.random.default_rng(SEED)
+    for _ in range(min(n_pos*3, 4000)):
+        nums=tuple(sorted(int(x) for x in rng.choice(range(1,n_max+1),k,replace=False)))
+        feats.append(get_features(nums,stats,n_max)); labels.append(0)
+    X=np.array(feats,dtype=float); y=np.array(labels,dtype=int)
+    if len(np.unique(y))>1:
+        try:
+            X,y=SMOTE(random_state=SEED,k_neighbors=min(3,max(1,int(np.sum(y==1))-1))).fit_resample(X,y)
         except Exception:
-            continue
+            try: X,y=RandomOverSampler(random_state=SEED).fit_resample(X,y)
+            except Exception: pass
+    return X, y
 
-        feats.append(
-            enhanced_combo_features_tuple(
-                nums,
-                hot_json,
-                pos_freq_json,
-                n_max
-            )
-        )
-        labels.append(1)
-        n_pos += 1
+# ─────────────────────────────────────────────────────────────────────
+# ENTRENAMIENTO
+# ─────────────────────────────────────────────────────────────────────
 
-    labels_arr = np.array(labels)
-    if sum(labels_arr) == 0:
-        logger.warning(f"No positive samples for {name}. Skipping model training.")
-        return None, None, None
+def train_models(X: np.ndarray, y: np.ndarray, name: str, light: bool) -> Dict:
+    scaler=StandardScaler(); Xs=scaler.fit_transform(X)
+    n_sp=max(2,min(3,len(X)//15)); tscv=TimeSeriesSplit(n_splits=n_sp)
+    models: Dict[str,Any]={}
 
-    X = np.array(feats)
-    y = labels_arr
-
-    n_neg = min(n_neg, max(1, n_pos * 2))
-    rng = np.random.default_rng(SEED)
-
-    for _ in range(n_neg):
-        nums = tuple(
-            sorted(int(x) for x in rng.choice(range(1, n_max + 1), k, replace=False))
-        )
-        feats.append(
-            enhanced_combo_features_tuple(
-                nums,
-                hot_json,
-                pos_freq_json,
-                n_max
-            )
-        )
-        labels.append(0)
-
-    # incorporate previous predictions as weak supervision
-    if name in history:
-        for entry in history.get(name, []):
-            if entry.get("actual"):
-                actual_set = set(entry["actual"])
-                for pred in entry.get("predicted", []):
-                    pred_combo = pred.get("combo")
-                    if not pred_combo:
-                        continue
-                    pred_set = set(pred_combo)
-                    match = len(pred_set & actual_set)
-                    nums = tuple(sorted(int(x) for x in pred_combo))
-                    feats.append(enhanced_combo_features_tuple(nums, hot_json, pos_freq_json, n_max))
-                    labels.append(1 if match >= 3 else 0)
-
-    feats = np.array(feats, dtype=float)
-    labels = np.array(labels, dtype=int)
-
-    if len(labels) > 0 and len(np.unique(labels)) > 1:
-        try:
-            smote = SMOTE(random_state=SEED, k_neighbors=min(3, max(1, int(np.sum(labels==1))-1)))
-            feats, labels = smote.fit_resample(feats, labels)
-        except Exception as e:
-            logger.warning(f"SMOTE failed, falling back to RandomOverSampler: {e}")
-            ros = RandomOverSampler(random_state=SEED)
-            feats, labels = ros.fit_resample(feats, labels)
-
-    meta = {"hot": hot, "pos_freq": pos_freq}
-    return feats, labels, meta
-
-def validate_dataset_integrity(df: pd.DataFrame, name: str, n_max: int, k: int) -> bool:
+    # IsolationForest
     try:
-        expected_cols = [f"N{i}" for i in range(1, k + 1)]
-        if not all(col in df.columns for col in expected_cols):
-            logger.error(f"[{name}] Missing columns: {set(expected_cols) - set(df.columns)}")
-            return False
-        for col in expected_cols:
-            if not df[col].apply(lambda x: isinstance(x, (int, float, np.integer, np.floating)) and 1 <= int(x) <= n_max).all():
-                logger.error(f"[{name}] Invalid values in {col}")
-                return False
-        return True
-    except Exception as e:
-        logger.error(f"[{name}] Error validating dataset: {e}")
-        return False
-
-def load_or_train_model(df_hist: pd.DataFrame, name: str) -> Dict[str, Any]:
-    model_file = MODEL_FILE_TEMPLATE.format(name=name)
-    if os.path.exists(model_file):
-        try:
-            models = joblib.load(model_file)
-            logger.info(f"[{name}] Loaded model from {model_file}")
-            return models
-        except Exception as e:
-            logger.warning(f"Error loading model {name}: {e} - will retrain")
-
-    start_time = time.time()
-    logger.info(f"[{name}] Training models...")
-
-    if not validate_dataset_integrity(df_hist, name, LOTTERIES[name]["n_max"], LOTTERIES[name]["k"]):
-        raise RuntimeError(f"Dataset invalid for {name}")
-
-    res = build_supervised_dataset(df_hist, name)
-    if res[0] is None:
-        logger.warning(f"Skipping training for {name}")
-        return {}
-
-    X, y, meta = res
-
-    if len(y) == 0:
-        raise RuntimeError(f"No data for training for {name}")
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    # Isolation Forest (anomaly)
-    if_model = tune_model(IsolationForest(random_state=SEED), X_scaled, y, {'n_estimators': [100], 'contamination': [0.05]}, is_if=True)
+        m=IsolationForest(n_estimators=150,contamination=0.05,random_state=SEED)
+        m.fit(Xs); models["if"]=m; logger.info(f"[{name}] IF OK")
+    except Exception as e: logger.warning(f"[{name}] IF: {e}"); models["if"]=None
 
     # XGBoost
-    xgb_model = tune_model(xgb.XGBClassifier(random_state=SEED, eval_metric='auc', use_label_encoder=False), X_scaled, y,
-                           {'n_estimators': [100], 'max_depth': [3], 'learning_rate': [0.05], 'subsample': [0.8], 'colsample_bytree': [0.8]})
+    try:
+        base=xgb.XGBClassifier(n_estimators=200,max_depth=4,learning_rate=0.05,
+                                 subsample=0.8,colsample_bytree=0.8,
+                                 eval_metric="auc",use_label_encoder=False,random_state=SEED)
+        m=CalibratedClassifierCV(base,cv=min(3,n_sp),method="sigmoid")
+        m.fit(Xs,y); models["xgb"]=m; logger.info(f"[{name}] XGB OK")
+    except Exception as e: logger.warning(f"[{name}] XGB: {e}"); models["xgb"]=None
 
     # LightGBM
     try:
-        lgbm_model = tune_model(lgb.LGBMClassifier(random_state=SEED, verbose=-1), X_scaled, y,
-                                {'n_estimators': [100], 'max_depth': [3], 'learning_rate': [0.05]})
-    except Exception as e:
-        logger.warning(f"LightGBM tuning failed: {e}")
-        lgbm_model = None
+        base=lgb.LGBMClassifier(n_estimators=200,max_depth=4,learning_rate=0.05,
+                                  num_leaves=31,subsample=0.8,verbose=-1,random_state=SEED)
+        m=CalibratedClassifierCV(base,cv=min(3,n_sp),method="isotonic")
+        m.fit(Xs,y); models["lgbm"]=m; logger.info(f"[{name}] LGBM OK")
+    except Exception as e: logger.warning(f"[{name}] LGBM: {e}"); models["lgbm"]=None
 
-    # LSTM (optional)
-    lstm_model = None
-    if TENSORFLOW_AVAILABLE and X_scaled.shape[0] > 80:
+    # CatBoost (solo full)
+    models["catboost"]=None
+    if CATBOOST_AVAILABLE and not light:
         try:
-            lstm_model = Sequential([LSTM(32, input_shape=(X_scaled.shape[1], 1), return_sequences=False), Dense(1, activation='sigmoid')])
-            X_lstm = X_scaled.reshape(X_scaled.shape[0], X_scaled.shape[1], 1)
-            lstm_model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['AUC'])
-            lstm_model.fit(X_lstm, y, epochs=4, batch_size=32, validation_split=0.15, verbose=0)
-        except Exception as e:
-            logger.warning(f"LSTM training failed: {e}")
-            lstm_model = None
+            base=cb.CatBoostClassifier(iterations=200,depth=4,learning_rate=0.05,
+                                         verbose=0,random_seed=SEED)
+            m=CalibratedClassifierCV(base,cv=min(3,n_sp),method="isotonic")
+            m.fit(Xs,y); models["catboost"]=m; logger.info(f"[{name}] CatBoost OK")
+        except Exception as e: logger.warning(f"[{name}] CatBoost: {e}")
 
-    models = {'if': if_model, 'xgb': xgb_model, 'lgbm': lgbm_model, 'lstm': lstm_model, 'scaler': scaler, 'meta': meta}
-    try:
-        joblib.dump(models, model_file)
-        logger.info(f"[{name}] Models saved to {model_file}")
-    except Exception as e:
-        logger.warning(f"Error saving model {name}: {e}")
-        send_telegram_alert(f"Error saving model {name}: {e}")
-
-    logger.info(f"[{name}] Models trained in {time.time() - start_time:.2f}s")
-    return models
-
-# ---------- Plausibility ----------
-def is_plausible_combo(combo: Tuple[int, ...], min_sum=MIN_SUM_ALLOWED, max_sum=MAX_SUM_ALLOWED, max_consec=MAX_CONSECUTIVE_ALLOWED) -> bool:
-    s = sum(combo)
-    if s < min_sum or s > max_sum:
-        return False
-    consec = 1
-    max_run = 1
-    for i in range(len(combo)-1):
-        if combo[i+1] == combo[i] + 1:
-            consec += 1
-            max_run = max(max_run, consec)
-        else:
-            consec = 1
-    if max_run > max_consec:
-        return False
-    return True
-
-# ---------- Worker initializer & scoring ----------
-def worker_initializer(model_files_json: str, lottery_names_json: str):
-    global WORKER_MODELS, WORKER_SCALERS, WORKER_NAMES
-    try:
-        model_files = json.loads(model_files_json)
-        lottery_names = json.loads(lottery_names_json)
-    except Exception:
-        model_files = {}
-        lottery_names = []
-
-    WORKER_MODELS = {}
-    WORKER_SCALERS = {}
-    WORKER_NAMES = lottery_names
-
-    for name in lottery_names:
-        mf = model_files.get(name)
-        if not mf or not os.path.exists(mf):
-            WORKER_MODELS[name] = {}
-            WORKER_SCALERS[name] = None
-            logger.warning(f"[worker-{os.getpid()}] Modelo para {name} no encontrado: {mf}")
-            continue
+    # LSTM (solo full + TF)
+    models["lstm"]=None
+    if TENSORFLOW_AVAILABLE and not light and Xs.shape[0]>100:
         try:
-            models = joblib.load(mf)
-            WORKER_MODELS[name] = {
-                "if": models.get("if"),
-                "xgb": models.get("xgb"),
-                "lgbm": models.get("lgbm"),
-                "lstm": models.get("lstm")
-            }
-            WORKER_SCALERS[name] = models.get("scaler")
-            logger.info(f"[worker-{os.getpid()}] Modelos cargados para {name}")
-        except Exception as e:
-            WORKER_MODELS[name] = {}
-            WORKER_SCALERS[name] = None
-            logger.error(f"[worker-{os.getpid()}] Error cargando modelos para {name}: {e}")
-    try:
-        p = psutil.Process(os.getpid())
-        if os.name == "nt":
-            p.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
-        else:
-            p.nice(10)
-    except Exception:
-        pass
+            Xl=Xs.reshape(Xs.shape[0],Xs.shape[1],1)
+            lm=Sequential([LSTM(64,input_shape=(Xs.shape[1],1),return_sequences=True),
+                            Dropout(0.3),LSTM(32),Dropout(0.2),
+                            BatchNormalization(),Dense(1,activation="sigmoid")])
+            lm.compile(optimizer="adam",loss="binary_crossentropy",metrics=["AUC"])
+            lm.fit(Xl,y,epochs=20,batch_size=64,validation_split=0.15,
+                   callbacks=[EarlyStopping(patience=3,restore_best_weights=True)],verbose=0)
+            models["lstm"]=lm; logger.info(f"[{name}] LSTM OK")
+        except Exception as e: logger.warning(f"[{name}] LSTM: {e}")
 
-def _features_list_to_array(feats_list: List[Tuple[float, ...]]) -> np.ndarray:
-    if not feats_list:
-        return np.zeros((0, 0), dtype=np.float32)
-    arr = np.array(feats_list, dtype=np.float32)
-    return arr
-
-def _norm_np(arr: np.ndarray) -> np.ndarray:
-    if arr is None or arr.size == 0:
-        return np.zeros_like(arr)
-    a = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    mn = a.min()
-    mx = a.max()
-    if mx - mn < 1e-12:
-        return np.zeros_like(a)
-    return (a - mn) / (mx - mn + 1e-12)
-
-def _vectorized_score_for_lottery(X: np.ndarray, lottery_name: str):
-    global WORKER_MODELS, WORKER_SCALERS
-    scaler = WORKER_SCALERS.get(lottery_name)
-    models = WORKER_MODELS.get(lottery_name, {})
-    if scaler is not None and X.shape[0] > 0:
+    # Meta-learner HistGradientBoosting sobre OOF
+    base_names=[bn for bn in ("xgb","lgbm","catboost") if models.get(bn)]
+    models["meta"]=None; models["meta_cols"]=[]
+    if len(base_names)>=2 and len(X)>=40:
         try:
-            Xs = scaler.transform(X)
-        except Exception:
-            Xs = X
-    else:
-        Xs = X
-        
-    n = Xs.shape[0]
-    score_if = np.zeros(n, dtype=np.float32)
-    score_xgb = np.zeros(n, dtype=np.float32)
-    score_lgbm = np.zeros(n, dtype=np.float32)
-    score_lstm = np.zeros(n, dtype=np.float32)
-    
-    try:
-        if models.get("if") is not None:
-            score_if = -models["if"].score_samples(Xs).astype(np.float32)
-    except Exception:
-        score_if = np.zeros(n, dtype=np.float32)
-    try:
-        if models.get("xgb") is not None:
-            score_xgb = models["xgb"].predict_proba(Xs)[:, 1].astype(np.float32)
-    except Exception:
-        score_xgb = np.zeros(n, dtype=np.float32)
-    try:
-        if models.get("lgbm") is not None:
-            score_lgbm = models["lgbm"].predict_proba(Xs)[:, 1].astype(np.float32)
-    except Exception:
-        score_lgbm = np.zeros(n, dtype=np.float32)
-    try:
-        if models.get("lstm") is not None and TENSORFLOW_AVAILABLE:
-            X_lstm = Xs.reshape(Xs.shape[0], Xs.shape[1], 1)
-            score_lstm = models["lstm"].predict(X_lstm, verbose=0).flatten().astype(np.float32)
-    except Exception:
-        score_lstm = np.zeros(n, dtype=np.float32)
-        
-    s_if = _norm_np(score_if)
-    s_xgb = _norm_np(score_xgb)
-    s_lgbm = _norm_np(score_lgbm)
-    s_lstm = _norm_np(score_lstm)
-    
-    # Ensure ML ensemble weights sum to 1.0
-    lstm_weight = max(0.0, 1.0 - (ALPHA_IF + BETA_XGB + BETA_LGBM))
-    ml_ensemble_raw = ALPHA_IF * s_if + BETA_XGB * s_xgb + BETA_LGBM * s_lgbm + lstm_weight * s_lstm
-    raw_norm = _norm_np(ml_ensemble_raw)
-    
-    return raw_norm, s_if, s_xgb, s_lgbm, s_lstm
+            oof=[cross_val_predict(models[bn],Xs,y,cv=min(3,n_sp),method="predict_proba")[:,1]
+                 for bn in base_names]
+            Z=np.column_stack(oof)
+            meta=HistGradientBoostingClassifier(max_iter=100,random_state=SEED)
+            meta.fit(Z,y)
+            models["meta"]=meta; models["meta_cols"]=base_names
+            logger.info(f"[{name}] Meta-HGBC OK: {base_names}")
+        except Exception as e: logger.warning(f"[{name}] Stacking: {e}")
 
-# ---------- Worker batch function ----------
-def worker_score_batch_global(batch_args):
-    combos, hot_jsons_per_lottery_json, pos_join_per_lottery_json, n_max, k = batch_args
+    # Permutation importance (diagnóstico)
     try:
-        hot_map = json.loads(hot_jsons_per_lottery_json)
-    except Exception:
-        hot_map = {}
-    try:
-        pos_map = json.loads(pos_join_per_lottery_json)
-    except Exception:
-        pos_map = {}
+        ref=models.get("xgb") or models.get("lgbm")
+        if ref:
+            pi=permutation_importance(ref,Xs,y,n_repeats=5,random_state=SEED,n_jobs=1)
+            top10=np.argsort(pi.importances_mean)[::-1][:10]
+            logger.info(f"[{name}] Top-10 feature idx: {top10.tolist()}")
+    except Exception: pass
 
-    feats_per_lottery = {name: [] for name in WORKER_NAMES}
-    combos_out = []
-    
+    return {"models":models,"scaler":scaler}
+
+def load_or_train(df: pd.DataFrame, name: str, stats: Dict, light: bool) -> Dict:
+    mf=MODEL_FILE_TPL.format(name=name); n=len(df)
+    if os.path.exists(mf):
+        try:
+            c=joblib.load(mf)
+            if abs(c.get("trained_on",0)-n)<=5 and c.get("light")==light:
+                logger.info(f"[{name}] Modelos desde caché"); return c
+        except Exception: pass
+    logger.info(f"[{name}] Entrenando (light={light})...")
+    t0=time.time(); X,y=build_dataset(df,name,stats)
+    r=train_models(X,y,name,light)
+    r["trained_on"]=n; r["light"]=light
+    try: joblib.dump(r,mf); logger.info(f"[{name}] Modelos guardados {time.time()-t0:.1f}s")
+    except Exception as e: logger.warning(f"No se guardó modelo {name}: {e}")
+    return r
+
+# ─────────────────────────────────────────────────────────────────────
+# BACKTESTING
+# ─────────────────────────────────────────────────────────────────────
+
+def backtest(df: pd.DataFrame, name: str, n_splits: int=5) -> Dict:
+    k=LOTTERIES[name]["k"]; n_max=LOTTERIES[name]["n_max"]; n=len(df)
+    if n<60: return {"mean_matches":0.,"baseline":0.,"lift":1.}
+    df_asc=df.iloc[::-1].reset_index(drop=True)
+    sp=n//(n_splits+1); rng=np.random.default_rng(SEED+7)
+    ncols=[f"N{i}" for i in range(1,k+1)]
+    ml_m,rnd_m=[],[]
+    for fold in range(n_splits):
+        te=sp*(fold+1); ts=te; tend=min(ts+max(1,sp//2),n)
+        if ts>=n: break
+        stats=_build_stats(df_asc.iloc[:te],name)
+        hot30=stats["hot30"]; gd=stats["gap"]
+        cands=[tuple(sorted(int(x) for x in rng.choice(range(1,n_max+1),k,replace=False)))
+               for _ in range(1000)]
+        scr=np.array([sum(float(hot30.get(str(nn),0.)) for nn in c)+
+                      sum(float(gd.get(str(nn),1.)) for nn in c)*0.1 for c in cands])
+        top_nums=set(nn for i in np.argsort(scr)[-10:] for nn in cands[i])
+        for _,row in df_asc.iloc[ts:tend].iterrows():
+            actual=set(int(row[c]) for c in ncols if pd.notna(row.get(c)))
+            if len(actual)<k: continue
+            ml_m.append(len(top_nums&actual))
+            rnd_m.append(len(set(int(x) for x in rng.choice(range(1,n_max+1),k,replace=False))&actual))
+    if not ml_m: return {"mean_matches":0.,"baseline":0.,"lift":1.}
+    mm=float(np.mean(ml_m)); mb=float(np.mean(rnd_m)) if rnd_m else 1.
+    lift=mm/(mb+1e-9)
+    logger.info(f"[{name}] Backtest lift={lift:.3f} (ml={mm:.3f} vs rnd={mb:.3f})")
+    return {"mean_matches":mm,"baseline":mb,"lift":lift}
+
+def save_backtest(bt: Dict):
+    h={}
+    if os.path.exists(BACKTEST_HISTORY):
+        try:
+            with open(BACKTEST_HISTORY) as f: h=json.load(f)
+        except Exception: pass
+    ts=datetime.now().strftime("%Y-%m-%d %H:%M")
+    h[ts]=bt; keys=sorted(h.keys())[-50:]
+    h={k:h[k] for k in keys}
+    try:
+        with open(BACKTEST_HISTORY,"w") as f: json.dump(h,f,indent=2,default=safe_json)
+    except Exception: pass
+
+# ─────────────────────────────────────────────────────────────────────
+# PLAUSIBILIDAD
+# ─────────────────────────────────────────────────────────────────────
+
+def is_plausible(c: tuple) -> bool:
+    s=sum(c)
+    if not (MIN_SUM<=s<=MAX_SUM): return False
+    cons=mr=1
+    for i in range(len(c)-1):
+        if c[i+1]==c[i]+1: cons+=1; mr=max(mr,cons)
+        else: cons=1
+    return mr<=MAX_CONSEC
+
+# ─────────────────────────────────────────────────────────────────────
+# GENERACIÓN DE CANDIDATOS
+# ─────────────────────────────────────────────────────────────────────
+
+def generate_candidates(n_max:int, k:int, n_samples:int,
+                         stats_map:Dict, rng_seed:int=SEED) -> List[Tuple]:
+    rng=np.random.default_rng(rng_seed); nr=np.arange(1,n_max+1)
+    hot=np.ones(n_max+1,dtype=float); gap=np.ones(n_max+1,dtype=float)
+    cooc_all: Dict[str,float]={}
+    for st in stats_map.values():
+        for ns,w in st.get("hot30",{}).items(): hot[int(ns)]+=float(w)*8.
+        for ns,g in st.get("gap",{}).items():   gap[int(ns)]+=float(g)*3.
+        for pk,pv in st.get("cooc",{}).items(): cooc_all[pk]=max(cooc_all.get(pk,1.),float(pv))
+    hot_p=hot[1:]/hot[1:].sum(); gap_p=gap[1:]/gap[1:].sum()
+    uni_p=np.ones(n_max,dtype=float)/n_max
+    cooc_arr=np.ones((n_max+1,n_max+1),dtype=float)
+    for pk,pv in cooc_all.items():
+        try:
+            a,b=map(int,pk.split("_")); cooc_arr[a,b]=cooc_arr[b,a]=pv
+        except Exception: pass
+    cands=set(); att=0; mx=max(20000,n_samples*12)
+    while len(cands)<n_samples and att<mx:
+        st=rng.choice([0,1,2,3],p=[0.40,0.25,0.10,0.25])
+        try:
+            if st==0:   sel=rng.choice(nr,size=k,replace=False,p=hot_p)
+            elif st==1: sel=rng.choice(nr,size=k,replace=False,p=gap_p)
+            elif st==2:
+                first=int(rng.choice(nr,p=hot_p))
+                cp=cooc_arr[first,1:].copy(); cp[first-1]=0.
+                if cp.sum()<1e-9: cp=np.ones(n_max,dtype=float)
+                cp/=cp.sum()
+                rest=list(rng.choice(nr,size=k-1,replace=False,p=cp))
+                sel=[first]+rest
+            else: sel=rng.choice(nr,size=k,replace=False,p=uni_p)
+            c=tuple(sorted(int(x) for x in sel))
+            if len(set(c))==k and is_plausible(c): cands.add(c)
+        except Exception: pass
+        att+=1
+    if not cands: raise RuntimeError("No se generaron candidatos")
+    r=list(cands)
+    return r[:n_samples] if len(r)>n_samples else r
+
+# ─────────────────────────────────────────────────────────────────────
+# EXPANSIÓN CON SIMULATED ANNEALING
+# ─────────────────────────────────────────────────────────────────────
+
+def expand_sa(top: List[Tuple], n_max:int, k:int,
+              stats_map:Dict, per_c:int, target:int, rng_seed:int=SEED) -> List[Tuple]:
+    rng=np.random.default_rng(rng_seed)
+    gap=np.ones(n_max+1,dtype=float)
+    for st in stats_map.values():
+        for ns,g in st.get("gap",{}).items(): gap[int(ns)]+=float(g)
+    gap_p=gap[1:]/gap[1:].sum(); nr=np.arange(1,n_max+1)
+    nbrs=set(); temp=1.0; cool=0.995
+    lim=min(len(top),max(300,len(top)//5))
+    for c in top[:lim]:
+        cur=list(c)
+        for _ in range(per_c):
+            temp=max(0.01,temp*cool); cand=cur.copy()
+            nc=rng.choice([1,1,2],p=[0.50,0.35,0.15])
+            for _ in range(nc):
+                pos=rng.integers(0,k)
+                if rng.random()<temp: repl=int(rng.integers(1,n_max+1))
+                else:                  repl=int(rng.choice(nr,p=gap_p))
+                cand[pos]=repl
+            cs=tuple(sorted(set(int(x) for x in cand)))
+            if len(cs)==k and is_plausible(cs): nbrs.add(cs); cur=list(cs)
+        if len(nbrs)>=target: break
+    return list(nbrs)[:target]
+
+# ─────────────────────────────────────────────────────────────────────
+# WORKER INIT Y SCORING
+# ─────────────────────────────────────────────────────────────────────
+
+def worker_init(mf_j:str, stats_j:str, names_j:str, light_j:str):
+    global WORKER_MODELS,WORKER_SCALERS,WORKER_STATS,WORKER_NAMES,WORKER_LIGHT
+    WORKER_NAMES=json.loads(names_j); WORKER_LIGHT=json.loads(light_j)
+    WORKER_STATS=json.loads(stats_j)
+    mf=json.loads(mf_j)
+    for name in WORKER_NAMES:
+        f=mf.get(name,"")
+        if f and os.path.exists(f):
+            try:
+                c=joblib.load(f)
+                WORKER_MODELS[name]=c.get("models",{}); WORKER_SCALERS[name]=c.get("scaler")
+            except Exception: WORKER_MODELS[name]={}; WORKER_SCALERS[name]=None
+        else: WORKER_MODELS[name]={}; WORKER_SCALERS[name]=None
+    try:
+        p=psutil.Process(os.getpid())
+        p.nice(10 if os.name!="nt" else psutil.BELOW_NORMAL_PRIORITY_CLASS)
+    except Exception: pass
+
+def _ml_score(combos:List[Tuple], name:str) -> np.ndarray:
+    st=WORKER_STATS.get(name,{}); mdls=WORKER_MODELS.get(name,{})
+    sc=WORKER_SCALERS.get(name); n_max=LOTTERIES[name]["n_max"]; m=len(combos)
+    args=_stats_args(st)
+    feats=[]
     for c in combos:
+        try: feats.append(combo_features(c,n_max,*args))
+        except: feats.append(tuple([0.]*70))
+    X=np.array(feats,dtype=np.float32)
+    Xs=sc.transform(X) if sc is not None and X.shape[0]>0 else X
+    # Stacking
+    meta=mdls.get("meta"); mc=mdls.get("meta_cols",[])
+    if meta and len(mc)>=2:
         try:
-            c_t = tuple(int(x) for x in c)
-        except Exception:
-            continue
-        if not is_plausible_combo(c_t):
-            continue
-            
-        combos_out.append(c_t)
-        for name in WORKER_NAMES:
-            hot_json = hot_map.get(name, "{}")
-            pos_join = pos_map.get(name, "")
-            pos_jsons = tuple(pos_join.split("||")) if isinstance(pos_join, str) and pos_join else ()
-            feats_per_lottery[name].append(enhanced_combo_features_tuple(tuple(c_t), hot_json, pos_jsons, n_max))
-            
-    if not combos_out:
-        return []
-        
-    per_lottery_results = {}
-    m = len(combos_out)
-    
+            cp=[mdls[bn].predict_proba(Xs)[:,1] for bn in mc if mdls.get(bn)]
+            if len(cp)==len(mc):
+                Z=np.column_stack(cp)
+                return _norm(meta.predict_proba(Z)[:,1].astype(np.float32))
+        except Exception: pass
+    # Fallback
+    score=np.zeros(m,dtype=np.float32); tw=0.
+    for mk,mw in [("xgb",W_XGB),("lgbm",W_LGBM),("catboost",W_CB)]:
+        mm=mdls.get(mk)
+        if mm:
+            try: p2=mm.predict_proba(Xs)[:,1].astype(np.float32); score+=mw*_norm(p2); tw+=mw
+            except: pass
+    if mdls.get("if"):
+        try: score+=W_IF*_norm(-mdls["if"].score_samples(Xs).astype(np.float32)); tw+=W_IF
+        except: pass
+    if mdls.get("lstm") and TENSORFLOW_AVAILABLE:
+        try:
+            Xl=Xs.reshape(Xs.shape[0],Xs.shape[1],1)
+            sl=mdls["lstm"].predict(Xl,verbose=0).flatten().astype(np.float32)
+            score+=W_LSTM*_norm(sl); tw+=W_LSTM
+        except: pass
+    return _norm(score/(tw or 1.))
+
+def worker_score_batch(args):
+    combos_raw,n_max,k=args
+    combos=[tuple(sorted(int(x) for x in c)) for c in combos_raw
+            if len(set(c))==k]
+    combos=[c for c in combos if is_plausible(c)]
+    if not combos: return []
+    m=len(combos)
+    per_lot: Dict[str,np.ndarray]={}
     for name in WORKER_NAMES:
-        feats_list = feats_per_lottery.get(name, [])
-        if not feats_list:
-            per_lottery_results[name] = {
-                "raw": np.zeros(m, dtype=np.float32), "raw_norm": np.zeros(m, dtype=np.float32),
-                "hot_scores": np.zeros(m, dtype=np.float32), "entropy": np.zeros(m, dtype=np.float32),
-                "parity_score": np.zeros(m, dtype=np.float32), "sum_balance": np.zeros(m, dtype=np.float32),
-                "composite": np.zeros(m, dtype=np.float32)
-            }
-            continue
-            
-        X = _features_list_to_array(feats_list)
-        if X.shape[0] == 0:
-            per_lottery_results[name] = {
-                "raw": np.zeros(m, dtype=np.float32), "raw_norm": np.zeros(m, dtype=np.float32),
-                "hot_scores": np.zeros(m, dtype=np.float32), "entropy": np.zeros(m, dtype=np.float32),
-                "parity_score": np.zeros(m, dtype=np.float32), "sum_balance": np.zeros(m, dtype=np.float32),
-                "composite": np.zeros(m, dtype=np.float32)
-            }
-            continue
-            
-        raw_norm, s_if, s_xgb, s_lgbm, s_lstm = _vectorized_score_for_lottery(X, name)
-        feats_arr = np.array(feats_list, dtype=np.float32)
-        hot_scores = feats_arr[:, -2] if feats_arr.shape[1] >= 12 else np.zeros(len(feats_arr))
-        entropy_vals = feats_arr[:, 4] if feats_arr.shape[1] >= 5 else np.zeros(len(feats_arr))
-        evens_vals = feats_arr[:, 2] if feats_arr.shape[1] >= 3 else np.zeros(len(feats_arr))
-        sums_vals = feats_arr[:, 0] if feats_arr.shape[1] >= 1 else np.zeros(len(feats_arr))
-        
-        parity_score = 1.0 - np.abs(evens_vals - (k/2.0)) / (k/2.0 + 1e-9)
-        min_sum = sum(range(1, k+1))
-        max_sum = sum(range(n_max - k + 1, n_max + 1))
-        denom_sum = (max_sum - min_sum) or 1.0
-        sum_balance_score = 1.0 - np.abs(sums_vals - ((min_sum + max_sum)/2.0)) / denom_sum
-        
-        composite = (1.0 * raw_norm + GAMMA_HOT * _norm_np(hot_scores) +
-                     DELTA_ENT * _norm_np(entropy_vals) + EPS_PAR * parity_score + ZETA_SUM * sum_balance_score)
-                     
-        per_lottery_results[name] = {
-            "raw": raw_norm, "raw_norm": raw_norm,
-            "hot_scores": hot_scores, "entropy": entropy_vals,
-            "parity_score": parity_score, "sum_balance": sum_balance_score,
-            "composite": composite
-        }
-        
-    composites_stack = []
+        per_lot[name]=_ml_score(combos,name)
+    # Refinamiento estadístico
+    refine=np.zeros(m,dtype=np.float32)
     for name in WORKER_NAMES:
-        comps = per_lottery_results.get(name, {}).get("composite", np.zeros(m, dtype=np.float32))
-        if comps.shape[0] != m:
-            comps = np.resize(comps, m)
-        composites_stack.append(comps)
-        
-    composites_stack = np.stack(composites_stack, axis=1)
-    global_composite = np.mean(composites_stack, axis=1)
-    
-    results = []
-    for idx, c in enumerate(combos_out):
-        per_lottery_detail = {}
-        for name in WORKER_NAMES:
-            detail = per_lottery_results[name]
-            per_lottery_detail[name] = {
-                "composite": float(detail["composite"][idx]) if detail["composite"].size > idx else 0.0,
-                "raw": float(detail["raw"][idx]) if detail["raw"].size > idx else 0.0,
-                "hot_score": float(detail["hot_scores"][idx]) if detail["hot_scores"].size > idx else 0.0,
-                "entropy": float(detail["entropy"][idx]) if detail["entropy"].size > idx else 0.0,
-            }
-        results.append({
-            "combo": list(c),
-            "suma": int(sum(c)),
-            "global_composite": float(global_composite[idx]),
-            "per_lottery": per_lottery_detail
-        })
-        
+        st=WORKER_STATS.get(name,{})
+        h30=st.get("hot30",{}); gd=st.get("gap",{})
+        ksd=st.get("ks",{});    cd=st.get("cooc",{})
+        hs=np.array([sum(float(h30.get(str(n),0.)) for n in c) for c in combos],dtype=np.float32)
+        gs=np.array([float(np.mean([float(gd.get(str(n),1.)) for n in c])) for c in combos],dtype=np.float32)
+        ks=np.array([float(np.mean([float(ksd.get(str(n),0.)) for n in c])) for c in combos],dtype=np.float32)
+        cs=np.array([float(np.mean([float(cd.get(f"{min(a,b)}_{max(a,b)}",1.))
+                    for i,a in enumerate(c) for b in c[i+1:]])) for c in combos],dtype=np.float32)
+        ev=np.array([sum(1 for n in c if n%2==0) for c in combos],dtype=np.float32)
+        sm=np.array([sum(c) for c in combos],dtype=np.float32)
+        ps=1.-np.abs(ev-k/2.)/(k/2.+1e-9)
+        mn_s=sum(range(1,k+1)); mx_s=sum(range(n_max-k+1,n_max+1))
+        sb=1.-np.abs(sm-(mn_s+mx_s)/2.)/((mx_s-mn_s) or 1.)
+        hum=np.array([float(_is_date_like(c) or
+                      max(sum(1 for i in range(len(c)-1) if c[i+1]==c[i]+1),
+                          max(sum(1 for n in c if n%f==0) for f in range(2,8)))>=4)
+                      for c in combos],dtype=np.float32)
+        local=(GAMMA_HOT*_norm(hs)+ETA_GAP*_norm(gs)+DELTA_KS*_norm(ks)
+               +THETA_COV*_norm(cs)+EPS_PAR*ps+ZETA_SUM*sb-IOTA_HUM*hum)
+        refine+=local/len(WORKER_NAMES)
+    # Global composite con temperature scaling
+    stk=np.stack([per_lot.get(n,np.zeros(m)) for n in WORKER_NAMES],axis=1)
+    wv=np.array([POT_WEIGHTS[n] for n in WORKER_NAMES],dtype=np.float32)
+    ml=stk@wv
+    T=float(os.getenv("ENSEMBLE_TEMP","1.5"))
+    ml=np.power(np.clip(ml,1e-9,1-1e-9),1./T)
+    gc_score=_norm(ml)+refine
+    out=[]
+    for i,c in enumerate(combos):
+        out.append({"combo":list(c),"suma":int(sum(c)),
+                    "global_composite":float(gc_score[i]),
+                    "per_lottery":{n:float(per_lot[n][i]) for n in WORKER_NAMES}})
+    gc.collect(); return out
+
+# ─────────────────────────────────────────────────────────────────────
+# PORTFOLIO: BEAM SEARCH + DIVERSIDAD COSENO
+# ─────────────────────────────────────────────────────────────────────
+
+def build_portfolio(df_top: pd.DataFrame, top_k:int,
+                    lam:float=0.30, bw:int=5) -> pd.DataFrame:
+    if len(df_top)<=top_k: return df_top
+    rows=df_top.to_dict("records")
+    sc=np.array([r["global_composite"] for r in rows])
+    sn=(sc-sc.min())/(sc.max()-sc.min()+1e-9)
+    n_max=next(iter(LOTTERIES.values()))["n_max"]
+    def vec(c):
+        v=np.zeros(n_max+1,dtype=np.float32)
+        for n in c: v[n]=1.
+        return v
+    vecs=[vec(r["combo"]) for r in rows]
+    beams=[(0.,[],set(),np.zeros(n_max+1,dtype=np.float32))]
+    no_imp=0; prev_b=-1.
+    for step in range(top_k):
+        cands_b=[]
+        for (acc,sel,cov,sumv) in beams:
+            for i,row in enumerate(rows):
+                if i in sel: continue
+                combo=set(row["combo"])
+                marg=len(combo-cov)/(len(combo) or 1)
+                if sel:
+                    sv=sumv/len(sel)
+                    sim=float(np.dot(sv,vecs[i])/(np.linalg.norm(sv)*np.linalg.norm(vecs[i])+1e-9))
+                    div=1.-sim
+                else: div=1.
+                ss=(1-lam)*sn[i]+lam*0.5*marg+lam*0.5*div
+                cands_b.append((acc+ss,sel+[i],cov|combo,sumv+vecs[i]))
+        cands_b.sort(key=lambda x:x[0],reverse=True); beams=cands_b[:bw]
+        best_now=beams[0][0] if beams else prev_b
+        if abs(best_now-prev_b)<0.0005:
+            no_imp+=1
+            if no_imp>=3: logger.info(f"Portfolio early-stop paso {step+1}"); break
+        else: no_imp=0
+        prev_b=best_now
+    idx=beams[0][1] if beams else list(range(min(top_k,len(rows))))
+    return df_top.iloc[idx].reset_index(drop=True)
+
+# ─────────────────────────────────────────────────────────────────────
+# RUNNER DE BATCHES
+# ─────────────────────────────────────────────────────────────────────
+
+def _run_batches(batches:list, mf:Dict, stats:Dict, light:bool, phase:str) -> list:
+    results=[]; ctx=get_context("spawn")
+    ia=(json.dumps(mf),json.dumps(stats),json.dumps(list(LOTTERIES.keys())),json.dumps(light))
+    t0=time.time(); tot=len(batches); done=0; lp=-5
     try:
-        gc.collect()
-    except Exception:
-        pass
-        
+        with ctx.Pool(processes=WORKERS,initializer=worker_init,initargs=ia) as pool:
+            for res in pool.imap_unordered(worker_score_batch,batches):
+                done+=1
+                if res: results.extend(res)
+                if done%max(1,tot//20)==0: gc.collect()
+                pct=int(done/tot*100)
+                if pct>=lp+5 or done==tot:
+                    eta=(time.time()-t0)/max(done,1)*(tot-done)
+                    ets=(datetime.now()+timedelta(seconds=eta)).strftime("%H:%M:%S")
+                    logger.info(f"[{phase}] {pct}% ({done}/{tot}) ETA {ets}"); lp=pct
+    except Exception as e:
+        logger.error(f"Pool {phase}: {e} — fallback single-thread")
+        worker_init(*ia)
+        for b in batches:
+            r=worker_score_batch(b)
+            if r: results.extend(r)
     return results
 
-# ---------- Candidate generation ----------
-def generate_candidates_importance_combined(n_max: int, k: int, n_samples: int, hot_per_lottery: Dict[str, Dict[str, float]], rng_seed: int = SEED):
-    rng = np.random.default_rng(rng_seed)
-    combined = np.zeros(n_max, dtype=float)
-    for name, hot in hot_per_lottery.items():
-        for num_s, w in hot.items():
-            try:
-                i = int(num_s) - 1
-                if 0 <= i < n_max:
-                    combined[i] += float(w)
-            except Exception:
-                continue
-    base_probs = np.ones(n_max, dtype=float) + combined * 8.0
-    base_probs = base_probs / base_probs.sum()
-    number_range = np.arange(1, n_max+1)
-    
-    candidates = set()
-    attempts = 0
-    max_attempts = max(10000, n_samples * 8)
-    batch_size = 4096
-    
-    base_probs_safe = base_probs.copy()
-    base_probs_safe[base_probs_safe == 0] = 1e-12
-    base_probs_safe = base_probs_safe / base_probs_safe.sum()
-    
-    while len(candidates) < n_samples and attempts < max_attempts:
+# ─────────────────────────────────────────────────────────────────────
+# PIPELINE
+# ─────────────────────────────────────────────────────────────────────
+
+def run_pipeline(all_histories:Dict, model_files:Dict, stats_all:Dict, light:bool):
+    n_max=next(iter(LOTTERIES.values()))["n_max"]
+    k=next(iter(LOTTERIES.values()))["k"]
+    PR=_PRERANK_LIGHT if light else _PRERANK_FULL
+    TG=_TARGET_LIGHT  if light else _TARGET_FULL
+    NE=_NEIGH_LIGHT   if light else _NEIGH_FULL
+    def mk_batches(cands):
+        sz=max(1,math.ceil(len(cands)/WORKERS))
+        return [(cands[i:i+sz],n_max,k) for i in range(0,len(cands),sz)]
+    logger.info("═"*55)
+    logger.info(f"FASE 1 — Generando {PR:,} candidatos (light={light})")
+    cands=generate_candidates(n_max,k,PR,stats_all)
+    logger.info(f"Fase 1 — {len(cands):,} generados")
+    logger.info("FASE 2 — Preranking...")
+    t0=time.time()
+    pre=_run_batches(mk_batches(cands),model_files,stats_all,light,"PRERANK")
+    if not pre: raise RuntimeError("Sin resultados preranking")
+    df_pre=(pd.DataFrame(pre).sort_values("global_composite",ascending=False)
+            .drop_duplicates(subset=["combo"]).reset_index(drop=True))
+    top=df_pre.head(PRERANK_TOP)
+    tc=[tuple(int(x) for x in r["combo"]) for _,r in top.iterrows()]
+    logger.info(f"Fase 2 — Top {len(tc):,} para expansión")
+    logger.info("FASE 3 — Expansión Simulated Annealing...")
+    nbrs=expand_sa(tc,n_max,k,stats_all,NE,TG)
+    final_set=set(tuple(int(x) for x in r["combo"]) for _,r in top.iterrows())
+    final_set.update(nbrs); final=list(final_set)
+    logger.info(f"Fase 3 — {len(final):,} candidatos finales")
+    logger.info("FASE 4 — Evaluación final...")
+    t0=time.time()
+    fin=_run_batches(mk_batches(final),model_files,stats_all,light,"FINAL")
+    if not fin: raise RuntimeError("Sin resultados evaluación final")
+    df_fin=(pd.DataFrame(fin).sort_values("global_composite",ascending=False)
+            .drop_duplicates(subset=["combo"]).head(TOP_K*5).reset_index(drop=True))
+    logger.info("FASE 5 — Maximum Coverage Portfolio (beam search)...")
+    df_port=build_portfolio(df_fin,TOP_K,lam=0.30,bw=5)
+    all_nums=set(n for row in df_port["combo"] for n in row)
+    cov=len(all_nums)/n_max*100
+    return df_port,{"n_prerank":len(cands),"n_final":len(final),
+                    "n_evaluated":len(fin),"coverage_pct":cov,
+                    "mean_score":float(df_port["global_composite"].mean()),
+                    "light":light,"time_s":time.time()-t0}
+
+# ─────────────────────────────────────────────────────────────────────
+# PERSISTENCIA
+# ─────────────────────────────────────────────────────────────────────
+
+def save_predictions(df:pd.DataFrame, date_str:str, bt:Dict):
+    h={}
+    if os.path.exists(PREDICTIONS_HISTORY):
         try:
-            for _ in range(batch_size):
-                sel = rng.choice(number_range, size=k, replace=False, p=base_probs_safe)
-                c = tuple(sorted(int(x) for x in sel))
-                if is_plausible_combo(c):
-                    candidates.add(c)
-                if len(candidates) >= n_samples:
-                    break
-            attempts += batch_size
-        except Exception:
-            idx_matrix = rng.choice(number_range, size=(batch_size, k), p=base_probs_safe, replace=True)
-            for row in idx_matrix:
-                c = tuple(sorted(set(int(x) for x in row)))
-                if len(c) == k and is_plausible_combo(c):
-                    candidates.add(c)
-                if len(candidates) >= n_samples:
-                    break
-            attempts += batch_size
-            
-    if not candidates:
-        raise RuntimeError("No candidates generated via importance sampling")
-        
-    result = list(candidates)
-    if len(result) > n_samples:
-        rng.shuffle(result)
-        result = result[:n_samples]
-    return result
-
-def expand_neighbors(top_combos: List[Tuple[int, ...]], n_max: int, k: int, per_combo: int = NEIGHBORS_PER_COMBO, rng_seed: int = SEED):
-    rng = np.random.default_rng(rng_seed)
-    neighbors = set()
-    limit_top = min(len(top_combos), max(500, PRERANK_TOP // 20))
-    
-    for combo in top_combos[:limit_top]:
-        base = list(combo)
-        for _ in range(per_combo):
-            c = base.copy()
-            num_changes = rng.choice([1,1,2], p=[0.45,0.45,0.10])
-            for _ in range(num_changes):
-                idx = rng.integers(0, k)
-                replacement = int(rng.integers(1, n_max+1))
-                c[idx] = replacement
-            c_sorted = tuple(sorted(set(int(x) for x in c)))
-            if len(c_sorted) == k and is_plausible_combo(c_sorted):
-                neighbors.add(c_sorted)
-            if len(neighbors) >= TARGET_EVAL:
-                break
-        if len(neighbors) >= TARGET_EVAL:
-            break
-            
-    if not neighbors:
-        raise RuntimeError("No neighbors generated in expansion")
-        
-    result = list(neighbors)
-    if len(result) > TARGET_EVAL:
-        rng.shuffle(result)
-        result = result[:TARGET_EVAL]
-    return result
-
-# ---------- Progress logger ----------
-def _log_progress_eta(phase: str, start_time: float, processed: int, total: int, last_pct: int, prefix: str = "") -> int:
-    if total == 0:
-        return last_pct
-    pct = int(processed / total * 100)
-    if pct >= last_pct + 5 or processed == total:
-        elapsed = time.time() - start_time
-        if processed > 0:
-            eta = (elapsed / processed) * (total - processed)
-            eta_ts = datetime.now() + timedelta(seconds=eta)
-            logger.info(f"{prefix} {phase} progress: {pct}% ({processed}/{total}) - Elapsed: {int(elapsed)}s - ETA: {eta_ts.strftime('%Y-%m-%d %H:%M:%S')}")
-        else:
-            logger.info(f"{prefix} {phase} progress: {pct}% ({processed}/{total}) - Elapsed: {int(elapsed)}s")
-        last_pct = pct
-    return last_pct
-
-# ---------- Orchestration pipeline ----------
-def sample_prerank_and_expand(all_histories: Dict[str, pd.DataFrame], model_files: Dict[str, str], n_prerank: int = PRERANK_SAMPLES):
-    start_time = time.time()
-    logger.info("Fase 1: Preranking - Generando candidatos por importancia")
-    hot_map = {}
-    pos_map = {}
-    for name, df in all_histories.items():
-        hot_map[name] = build_hot_freq(df, k=LOTTERIES[name]["k"])
-        pos_map[name] = build_pos_freq(df, k=LOTTERIES[name]["k"])
-        
-    n_max = next(iter(LOTTERIES.values()))["n_max"]
-    k = next(iter(LOTTERIES.values()))["k"]
-
-    candidates = generate_candidates_importance_combined(n_max, k, n_prerank, hot_map, rng_seed=SEED)
-    logger.info(f"Prerank: {len(candidates)} candidatos generados")
-
-    hot_json_map = {name: json.dumps(hot_map[name]) for name in hot_map}
-    pos_join_map = {name: "||".join(json.dumps(p) for p in pos_map[name]) for name in pos_map}
-    chunk_size = max(1, int(math.ceil(len(candidates) / WORKERS)))
-    batches = []
-    
-    for i in range(0, len(candidates), chunk_size):
-        batches.append((candidates[i:i+chunk_size], json.dumps(hot_json_map), json.dumps(pos_join_map), n_max, k))
-        
-    results = []
-    ctx = get_context("spawn")
-    init_args = (json.dumps(model_files), json.dumps(list(LOTTERIES.keys())))
-    last_pct = -5
-    processed = 0
-    total = len(batches)
-
+            with open(PREDICTIONS_HISTORY,encoding="utf-8") as f: h=json.load(f)
+        except Exception: pass
+    key="GlobalUnified_v8"
+    entry={"date":date_str,"backtest":bt,
+           "predicted":[{"combo":[int(x) for x in r["combo"]],
+                         "global_composite":float(r["global_composite"])}
+                        for _,r in df.iterrows()]}
+    h.setdefault(key,[]).append(entry); h[key]=h[key][-25:]
     try:
-        with ctx.Pool(processes=WORKERS, initializer=worker_initializer, initargs=init_args) as pool:
-            for res in pool.imap_unordered(worker_score_batch_global, batches):
-                processed += 1
-                if res:
-                    results.extend(res)
-                if processed % max(1, total//20) == 0:
-                    gc.collect()
-                last_pct = _log_progress_eta("PRERANK", start_time, processed, total, last_pct, prefix="Jefe Maestro (prerank)")
-    except Exception as e:
-        logger.error(f"Prerank pool error: {e}. Fallback single-threaded.")
-        worker_initializer(json.dumps(model_files), json.dumps(list(LOTTERIES.keys())))
-        for b in batches:
-            res = worker_score_batch_global(b)
-            if res:
-                results.extend(res)
-                
-    if not results:
-        raise RuntimeError("No results produced during prerank")
-        
-    df = pd.DataFrame(results)
-    df_preranked = df.sort_values("global_composite", ascending=False).drop_duplicates(subset=["combo"]).reset_index(drop=True)
-    top_prerank = df_preranked.head(PRERANK_TOP)
-    logger.info(f"Prerank: top {len(top_prerank)} retenidas para expansión")
+        with open(PREDICTIONS_HISTORY,"w",encoding="utf-8") as f:
+            json.dump(h,f,default=safe_json,ensure_ascii=False,indent=2)
+    except Exception as e: logger.error(f"Error guardando historial: {e}")
 
-    logger.info("Fase 2: Expansión de vecindarios alrededor de top prerank")
-    top_combos = [tuple(int(x) for x in row["combo"]) for _, row in top_prerank.iterrows()]
-    neighbors = expand_neighbors(top_combos, n_max, k, per_combo=NEIGHBORS_PER_COMBO, rng_seed=SEED)
-    logger.info(f"Expansión: generados {len(neighbors)} vecinos")
+# ─────────────────────────────────────────────────────────────────────
+# EMAIL
+# ─────────────────────────────────────────────────────────────────────
 
-    final_candidates_set = set(tuple(int(x) for x in row["combo"]) for _, row in top_prerank.iterrows())
-    final_candidates_set.update(neighbors)
-    final_candidates = list(final_candidates_set)
-    logger.info(f"Fase 3: Evaluación final - {len(final_candidates)} candidatos a evaluar (objetivo <= {TARGET_EVAL})")
-    return final_candidates, hot_map, pos_map
+def send_email_results(df:pd.DataFrame, stats:Dict, bt:Dict, ts:str) -> bool:
+    if not all([EMAIL_FROM,EMAIL_PASS,EMAIL_TO]):
+        logger.warning("Credenciales email no configuradas"); return False
+    cov=stats.get("coverage_pct",0); light=stats.get("light",False)
+    rows_h=""
+    for i,(_,row) in enumerate(df.iterrows(),1):
+        combo=" ".join(f"{int(x):02d}" for x in sorted(row["combo"]))
+        rows_h+=(f"<tr><td align='center'><b>{i}</b></td>"
+                 f"<td align='center'><b style='letter-spacing:2px'>{combo}</b></td>"
+                 f"<td align='center'>{float(row['global_composite']):.5f}</td>"
+                 f"<td align='center'>{int(row['suma'])}</td></tr>")
+    bt_h=""
+    for name,b in bt.items():
+        lift=b.get("lift",1.); color="#2e7d32" if lift>1.05 else "#c62828"
+        bt_h+=(f"<tr><td>{name}</td>"
+               f"<td align='center'>{b.get('mean_matches',0):.3f}</td>"
+               f"<td align='center'>{b.get('baseline',0):.3f}</td>"
+               f"<td align='center' style='color:{color}'><b>{lift:.3f}</b></td></tr>")
+    html=f"""<html><body style='font-family:Arial,sans-serif;max-width:700px;margin:auto'>
+<h2 style='color:#1a3a5c;border-bottom:3px solid #2e75b6;padding-bottom:8px'>
+🎰 Jefe Maestro v8.0 Final Supreme</h2>
+<p><b>Generado:</b> {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} &nbsp;
+<b>Modo:</b> {'⚡ Light' if light else '🚀 Full'} &nbsp;
+<b>Cobertura:</b> {cov:.1f}%</p>
+<h3 style='color:#2e75b6'>Top {TOP_K} Combinaciones (válidas para Melate, Revancha y Revanchita)</h3>
+<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse;width:100%'>
+<tr style='background:#1a3a5c;color:white'><th>#</th><th>N1–N6</th><th>Score</th><th>Suma</th></tr>
+{rows_h}</table>
+<p style='font-size:11px;color:#888'>El BONO de Melate lo elige el sorteo, no tú. 
+Tus 6 números son los mismos para los 3 sorteos.</p>
+<h3 style='color:#2e75b6'>Backtesting vs. azar aleatorio</h3>
+<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse;width:100%'>
+<tr style='background:#1a3a5c;color:white'><th>Sorteo</th><th>ML matches</th><th>Random</th><th>Lift</th></tr>
+{bt_h}</table>
+<p style='font-size:11px;color:#888'>Lift &gt; 1.0 = el modelo supera al azar en aciertos parciales.</p>
+<hr><p style='font-size:10px;color:#aaa'>Jefe Maestro v8.0 · Juega con responsabilidad.</p>
+</body></html>"""
+    msg=MIMEMultipart("alternative"); msg["Subject"]=f"🎰 Jefe Maestro v8 — {ts}"
+    msg["From"]=EMAIL_FROM; msg["To"]=EMAIL_TO; msg.attach(MIMEText(html,"html"))
+    for attempt in range(3):
+        try:
+            with smtplib.SMTP(SMTP_SERVER,SMTP_PORT,timeout=30) as s:
+                s.ehlo(); s.starttls(); s.ehlo(); s.login(EMAIL_FROM,EMAIL_PASS)
+                s.sendmail(EMAIL_FROM,[EMAIL_TO],msg.as_string())
+            logger.info(f"Email enviado a {EMAIL_TO}"); return True
+        except Exception as e:
+            if attempt==2: logger.error(f"Email falló: {e}")
+            time.sleep(3)
+    return False
 
-def final_evaluate_and_select(final_candidates: List[Tuple[int,...]], hot_map: Dict[str, Dict[str, float]], pos_map: Dict[str, List[Dict[str,float]]], model_files: Dict[str,str], top_k: int = TOP_K):
-    n_max = next(iter(LOTTERIES.values()))["n_max"]
-    k = next(iter(LOTTERIES.values()))["k"]
+# ─────────────────────────────────────────────────────────────────────
+# PUNTO DE ENTRADA PÚBLICO (main_run.py lo llama)
+# ─────────────────────────────────────────────────────────────────────
 
-    chunk_size = max(1, int(math.ceil(len(final_candidates) / WORKERS)))
-    batches = []
-    hot_json_map = {name: json.dumps(hot_map[name]) for name in hot_map}
-    pos_join_map = {name: "||".join(json.dumps(p) for p in pos_map[name]) for name in pos_map}
-    
-    for i in range(0, len(final_candidates), chunk_size):
-        batches.append((final_candidates[i:i+chunk_size], json.dumps(hot_json_map), json.dumps(pos_join_map), n_max, k))
-        
-    results = []
-    start_time = time.time()
-    last_pct = -5
-    processed = 0
-    total = len(batches)
-    ctx = get_context("spawn")
-    init_args = (json.dumps(model_files), json.dumps(list(LOTTERIES.keys())))
-    
+def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None):
+    """Punto de entrada para main_run.py."""
+    light=(_AUTO_LIGHT or
+           os.getenv("LIGHT_MODE","").lower() in ("1","true","yes") or
+           "--light" in sys.argv)
+    logger.info(f"🚀 Jefe Maestro v8.0 Final Supreme "
+                f"(RAM={_RAM_GB:.1f}GB CPUs={_CPUS} light={light})")
+    all_h=histories_override or load_all_histories()
+    # Stats
+    stats_all={}
+    for name,df in all_h.items():
+        stats_all[name]=load_or_build_stats(df,name)
+    # Modelos + backtest
+    mf={}; bt_all={}
+    for name,df in all_h.items():
+        try:
+            load_or_train(df,name,stats_all[name],light)
+            mf[name]=MODEL_FILE_TPL.format(name=name)
+        except Exception as e: _abort(f"Fallo modelo {name}: {e}")
+        try: bt_all[name]=backtest(df,name)
+        except Exception as e:
+            logger.warning(f"Backtest {name}: {e}"); bt_all[name]={"lift":1.}
+    save_backtest(bt_all)
+    # Serializar stats para workers
+    stats_s={}
+    for name,st in stats_all.items():
+        stats_s[name]={k:(v if isinstance(v,(dict,list,int,float,str,bool)) else str(v))
+                       for k,v in st.items()}
+    # Pipeline
     try:
-        with ctx.Pool(processes=WORKERS, initializer=worker_initializer, initargs=init_args) as pool:
-            for res in pool.imap_unordered(worker_score_batch_global, batches):
-                processed += 1
-                if res:
-                    results.extend(res)
-                if processed % max(1, total//20) == 0:
-                    gc.collect()
-                last_pct = _log_progress_eta("FINAL_EVAL", start_time, processed, total, last_pct, prefix="Jefe Maestro (final eval)")
-    except Exception as e:
-        logger.error(f"Final eval pool error: {e}. Fallback single-threaded.")
-        worker_initializer(json.dumps(model_files), json.dumps(list(LOTTERIES.keys())))
-        for b in batches:
-            res = worker_score_batch_global(b)
-            if res:
-                results.extend(res)
-                
-    if not results:
-        raise RuntimeError("No results in final evaluation")
-        
-    df = pd.DataFrame(results)
-    df_sorted = df.sort_values("global_composite", ascending=False).drop_duplicates(subset=["combo"]).head(top_k).reset_index(drop=True)
-    stats = {"count": len(df), "mean_score": float(df["global_composite"].mean()), "std_score": float(df["global_composite"].std()), "execution_time": time.time() - start_time}
-    return df_sorted, stats
-
-# ---------- Persistence & Email ----------
-def save_predictions_global(prediction_date: str, aggregated: pd.DataFrame):
-    history = load_predictions_history()
-    key = "GlobalUnified"
-    history_entry = {"date": prediction_date, "predicted": []}
-    for _, row in aggregated.iterrows():
-        history_entry["predicted"].append({
-            "combo": [int(x) for x in row["combo"]],
-            "global_composite": float(row["global_composite"]),
-            "per_lottery": row.get("per_lottery", {})
-        })
-    if key not in history:
-        history[key] = []
-    history[key].append(history_entry)
-    history[key] = history[key][-20:]
+        df_top,run_s=run_pipeline(all_h,mf,stats_s,light)
+    except Exception as e: _abort(f"Pipeline falló: {e}")
+    # Log
+    logger.info("═"*60); logger.info("TOP COMBINACIONES v8.0 Final Supreme")
+    logger.info(f"Cobertura portfolio: {run_s.get('coverage_pct',0):.1f}%")
+    logger.info("═"*60)
+    for i,(_,row) in enumerate(df_top.iterrows(),1):
+        combo=" ".join(f"{int(x):02d}" for x in sorted(row["combo"]))
+        logger.info(f"  #{i:02d}: {combo}  score={float(row['global_composite']):.5f}  suma={int(row['suma'])}")
+    logger.info("═"*60)
+    for name,bt in bt_all.items():
+        logger.info(f"  [{name}] lift={bt.get('lift',1.):.3f}")
+    logger.info("═"*60)
+    # Guardar y enviar
+    ts=datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_predictions(df_top,datetime.now().strftime("%Y-%m-%d"),bt_all)
+    out=os.path.join(_RESULTS,f"v8_results_{ts}.json")
     try:
-        with open(PREDICTIONS_HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(history, f, default=safe_json_convert, ensure_ascii=False, indent=2)
-        logger.info(f"Predictions history saved to {PREDICTIONS_HISTORY_FILE}")
-    except Exception as e:
-        logger.error(f"Error saving predictions history: {e}")
-        send_telegram_alert(f"Error saving history: {e}")
+        with open(out,"w",encoding="utf-8") as f:
+            json.dump({"combinaciones":[{"rank":i+1,
+                "combo_str":" ".join(f"{int(x):02d}" for x in sorted(row["combo"])),
+                "combo":[int(x) for x in row["combo"]],
+                "global_composite":float(row["global_composite"]),
+                "suma":int(row["suma"])}
+                for i,(_,row) in enumerate(df_top.iterrows())],
+                "run_stats":run_s,"backtest":bt_all},
+                f,default=safe_json,ensure_ascii=False,indent=2)
+        logger.info(f"Resultados: {out}")
+    except Exception as e: logger.error(f"Error guardando: {e}")
+    send_email_results(df_top,run_s,bt_all,ts)
+    logger.info("✅ Completado.")
+    return df_top, run_s
 
-def df_to_html_table_global(df: pd.DataFrame, title: str, limit: int = 20):
-    lines = []
-    lines.append(f"<h3>{title}</h3>")
-    lines.append('<table border="1" cellpadding="5" cellspacing="0">')
-    lines.append("<thead><tr><th>#</th><th>Combinación</th><th>Global Composite</th><th>Suma</th><th>Per Lottery Details</th></tr></thead><tbody>")
-    for i, row in df.head(limit).iterrows():
-        combo = " ".join(f"{int(x):02d}" for x in row["combo"])
-        composite = float(row.get("global_composite", 0.0))
-        suma = int(row.get("suma", sum(row["combo"]) if isinstance(row["combo"], (list,tuple)) else 0))
-        per = json.dumps(row.get("per_lottery", {}), ensure_ascii=False)
-        lines.append(f"<tr><td>{i+1}</td><td><b>{combo}</b></td><td>{composite:.6f}</td><td>{suma}</td><td>{per}</td></tr>")
-    lines.append("</tbody></table>")
-    return "\n".join(lines)
-
-def send_email_gmail_unified_global(aggregated: pd.DataFrame, system_stats: Dict, ts: str):
-    if not EMAIL_FROM or not EMAIL_PASS or not EMAIL_TO:
-        logger.warning("Email credentials not set - skipping prediction email")
-        return False
-    subject = f"Jefe Maestro - Top combinaciones unificadas (Elite v6.0) - {ts}"
-    html_lines = []
-    html_lines.append(f"<h2>Jefe Maestro - Top combinaciones unificadas (Elite v6.0)</h2>")
-    html_lines.append(f"<p>Generado: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</p>")
-    html_lines.append(df_to_html_table_global(aggregated, "Top combinaciones - Global Composite (una combinación para los 3 sorteos)"))
-    html_lines.append("<h3>System stats</h3>")
-    html_lines.append(f"<pre>{json.dumps(system_stats, indent=2)}</pre>")
-    html_body = "\n".join(html_lines)
-    
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_FROM
-    msg["To"] = EMAIL_TO
-    part1 = MIMEText(html_body, "html")
-    msg.attach(part1)
-    
-    try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(EMAIL_FROM, EMAIL_PASS)
-            server.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
-        logger.info(f"Unified global email sent to {EMAIL_TO}")
-        return True
-    except Exception as e:
-        logger.error(f"Error sending unified global email: {e}")
-        send_telegram_alert(f"Error sending unified global email: {e}")
-        return False
-
-# ---------- Main orchestration ----------
-
-# ============================================================
-# WRAPPER FOR AUTOMATION
-# ============================================================
-
-def run_model(histories_override=None):
-    logger.info("Running model from automation wrapper")
-    if histories_override:
-        all_histories = histories_override
-    else:
-        all_histories = load_all_histories_strict()
-
-    model_files = {}
-    for name, df in all_histories.items():
-        models = load_or_train_model(df, name)
-        model_files[name] = MODEL_FILE_TEMPLATE.format(name=name)
-
-    final_candidates, hot_map, pos_map = sample_prerank_and_expand(
-        all_histories,
-        model_files,
-        n_prerank=PRERANK_SAMPLES
-    )
-
-    df_global_top, stats = final_evaluate_and_select(
-        final_candidates,
-        hot_map,
-        pos_map,
-        model_files,
-        top_k=TOP_K
-    )
-    return df_global_top, stats
+# ─────────────────────────────────────────────────────────────────────
+# MAIN (ejecución directa)
+# ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Jefe Maestro Elite v6.0 - Global Unified Predictor")
-    parser.add_argument("--fast-mode", action="store_true", help="Usar modo rápido (menor número de candidatos)")
-    args = parser.parse_args()
-    
-    logger.info("✅ Iniciando Jefe Maestro Elite v6.0...")
-    system_info = {"version": "v6.0_elite_predictor", "models": ["IsolationForest", "XGBoost", "LightGBM", "LSTM" if TENSORFLOW_AVAILABLE else None], "timestamp": datetime.now().isoformat(), "workers": WORKERS, "lotteries": list(LOTTERIES.keys())}
-    system_info["models"] = [m for m in system_info["models"] if m is not None]
-
-    # 1) Load histories
-    try:
-        all_histories = load_all_histories_strict()
-    except SystemExit:
-        return
+    p=argparse.ArgumentParser(description="Jefe Maestro v8.0 Final Supreme")
+    p.add_argument("--light",action="store_true",help="Modo rápido GitHub Actions")
+    p.add_argument("--force-retrain",action="store_true",help="Borrar caché y reentrenar")
+    args=p.parse_args()
+    if args.force_retrain:
+        for name in LOTTERIES:
+            for f in [MODEL_FILE_TPL.format(name=name),STATS_FILE_TPL.format(name=name)]:
+                if os.path.exists(f): os.remove(f); logger.info(f"Caché borrado: {f}")
+    if args.light: os.environ["LIGHT_MODE"]="true"
+    try: run_model()
+    except SystemExit: raise
     except Exception as e:
-        abort_no_data(f"Error cargando historiales: {e}")
+        logger.critical(f"Fatal: {e}",exc_info=True)
+        send_telegram(f"Fatal Jefe Maestro v8: {e}"); sys.exit(1)
 
-    # 2) Load or train models
-    model_files = {}
-    models_map = {}
-    for name, df in all_histories.items():
-        try:
-            models = load_or_train_model(df, name)
-            models_map[name] = models
-            if models:
-                model_files[name] = MODEL_FILE_TEMPLATE.format(name=name)
-        except Exception as e:
-            abort_no_data(f"No se pudo cargar/entrenar modelo para {name}: {e}")
-
-    # 3) Prerank & expansion
-    try:
-        n_prerank = int(PRERANK_SAMPLES/4) if args.fast_mode else PRERANK_SAMPLES
-        final_candidates, hot_map, pos_map = sample_prerank_and_expand(all_histories, model_files, n_prerank=n_prerank)
-    except Exception as e:
-        abort_no_data(f"Pipeline prerank/expand falló: {e}")
-
-    # 4) Final evaluation
-    try:
-        df_global_top, stats = final_evaluate_and_select(
-            final_candidates,
-            hot_map,
-            pos_map,
-            model_files,
-            top_k=TOP_K
-        )
-    except Exception as e:
-        abort_no_data(f"Evaluación final falló: {e}")
-
-    # 5) Save aggregated
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    aggregated_fn = os.path.join(RESULTS_DIR, f"aggregated_global_v6_{ts}.json")
-    try:
-        aggregated_to_save = []
-        for _, row in df_global_top.iterrows():
-            aggregated_to_save.append({
-                "combo_str": " ".join(f"{int(x):02d}" for x in row["combo"]),
-                "combo": [int(x) for x in row["combo"]],
-                "global_composite": float(row["global_composite"]),
-                "suma": int(row["suma"]),
-                "per_lottery": row.get("per_lottery", {})
-            })
-        with open(aggregated_fn, "w", encoding="utf-8") as f:
-            json.dump(
-                {"aggregated": aggregated_to_save, "system_info": system_info, "stats": stats},
-                f,
-                default=safe_json_convert,
-                ensure_ascii=False,
-                indent=2
-            )
-        logger.info(f"Aggregated saved: {aggregated_fn}")
-    except Exception as e:
-        logger.error(f"Error saving aggregated: {e}")
-
-    # 6) Save predictions history
-    try:
-        save_predictions_global(datetime.now().strftime('%Y-%m-%d'), df_global_top)
-    except Exception as e:
-        logger.error(f"Error saving prediction history: {e}")
-
-    # 7) Send email
-    try:
-        send_email_gmail_unified_global(df_global_top, {"system_info": system_info, "stats": stats}, ts)
-    except Exception as e:
-        logger.error(f"Error sending final email: {e}")
-        send_telegram_alert(f"Error sending final email: {e}")
-
-    logger.info("Proceso completado. Revisa results/ y tu correo.")
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
