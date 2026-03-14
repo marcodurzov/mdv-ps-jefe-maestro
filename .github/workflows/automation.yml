@@ -36,7 +36,8 @@ jobs:
           EMAIL_TO:   ${{ secrets.EMAIL_TO }}
 
       - name: Correr Jefe Maestro
-        run: python main_run.py
+        run: python core/system/main_run.py
+
         env:
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
