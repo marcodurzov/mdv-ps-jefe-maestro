@@ -749,7 +749,7 @@ def save_backtest(bt: Dict):
 
 def is_plausible(c: tuple) -> bool:
     s=sum(c)
-    if not (MIN_SUM<=s<=MAX_SUM): return False
+    if not (MIN_SUM<=s<=210): return False
     cons=mr=1
     for i in range(len(c)-1):
         if c[i+1]==c[i]+1: cons+=1; mr=max(mr,cons)
@@ -911,12 +911,17 @@ def worker_score_batch(args):
         ps=1.-np.abs(ev-k/2.)/(k/2.+1e-9)
         mn_s=sum(range(1,k+1)); mx_s=sum(range(n_max-k+1,n_max+1))
         sb=1.-np.abs(sm-(mn_s+mx_s)/2.)/((mx_s-mn_s) or 1.)
-        hum=np.array([float(_is_date_like(c) or
+                hum=np.array([float(_is_date_like(c) or
                       max(sum(1 for i in range(len(c)-1) if c[i+1]==c[i]+1),
                           max(sum(1 for n in c if n%f==0) for f in range(2,8)))>=4)
                       for c in combos],dtype=np.float32)
-        local=(GAMMA_HOT*_norm(hs)+ETA_GAP*_norm(gs)+DELTA_KS*_norm(ks)
-               +THETA_COV*_norm(cs)+EPS_PAR*ps+ZETA_SUM*sb-IOTA_HUM*hum)
+
+        # Penalización adicional: 4+ números en rango 34-43
+        hot_band=np.array([float(sum(1 for n in c if 34<=n<=43)>=4)
+                           for c in combos],dtype=np.float32)
+                local=(GAMMA_HOT*_norm(hs)+ETA_GAP*_norm(gs)+DELTA_KS*_norm(ks)
+               +THETA_COV*_norm(cs)+EPS_PAR*ps+ZETA_SUM*sb
+               -IOTA_HUM*hum - 0.15*hot_band)
         refine+=local/len(WORKER_NAMES)
     # Global composite con temperature scaling
     stk=np.stack([per_lot.get(n,np.zeros(m)) for n in WORKER_NAMES],axis=1)
@@ -1164,6 +1169,7 @@ Tus 6 números son los mismos para los 3 sorteos.</p>
 <tr style='background:#1a3a5c;color:white'><th>Sorteo</th><th>ML matches</th><th>Random</th><th>Lift</th></tr>
 {bt_h}</table>
 <p style='font-size:11px;color:#888'>Lift &gt; 1.0 = el modelo supera al azar en aciertos parciales.</p>
+<p style='font-size:11px;color:#c62828'><b>Nota:</b> El Lift mide aciertos parciales promedio vs azar. No representa incremento en probabilidad de premio mayor.</p>
 <hr><p style='font-size:10px;color:#aaa'>Jefe Maestro v8.0 · Juega con responsabilidad.</p>
 </body></html>"""
     msg=MIMEMultipart("alternative"); msg["Subject"]=f"🎰 Jefe Maestro v8 — {ts}"
