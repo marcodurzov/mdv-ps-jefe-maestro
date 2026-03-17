@@ -911,7 +911,7 @@ def worker_score_batch(args):
         ps=1.-np.abs(ev-k/2.)/(k/2.+1e-9)
         mn_s=sum(range(1,k+1)); mx_s=sum(range(n_max-k+1,n_max+1))
         sb=1.-np.abs(sm-(mn_s+mx_s)/2.)/((mx_s-mn_s) or 1.)
-                hum=np.array([float(_is_date_like(c) or
+                        hum=np.array([float(_is_date_like(c) or
                       max(sum(1 for i in range(len(c)-1) if c[i+1]==c[i]+1),
                           max(sum(1 for n in c if n%f==0) for f in range(2,8)))>=4)
                       for c in combos],dtype=np.float32)
