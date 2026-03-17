@@ -902,7 +902,7 @@ def worker_score_batch(args):
         h30=st.get("hot30",{}); gd=st.get("gap",{})
         ksd=st.get("ks",{});    cd=st.get("cooc",{})
         hs=np.array([sum(float(h30.get(str(n),0.)) for n in c) for c in combos],dtype=np.float32)
-                gs=np.array([float(np.mean([float(gd.get(str(n),1.)) for n in c])) for c in combos],dtype=np.float32)
+        gs=np.array([float(np.mean([float(gd.get(str(n),1.)) for n in c])) for c in combos],dtype=np.float32)
         ks=np.array([float(np.mean([float(ksd.get(str(n),0.)) for n in c])) for c in combos],dtype=np.float32)
         cs=np.array([float(np.mean([float(cd.get(f"{min(a,b)}_{max(a,b)}",1.))
                     for i,a in enumerate(c) for b in c[i+1:]])) for c in combos],dtype=np.float32)
