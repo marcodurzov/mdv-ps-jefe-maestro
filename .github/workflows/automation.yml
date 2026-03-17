@@ -2,14 +2,13 @@ name: MDV Jefe Maestro Pipeline
 
 on:
   schedule:
-    # Ajusta estos horarios según tu automation.yml actual
-    - cron: '0 8 * * 3'   # Miércoles
-    - cron: '0 8 * * 5'   # Viernes
-    - cron: '0 8 * * 0'   # Domingo
-  workflow_dispatch:       # Permite correrlo manualmente
+    - cron: '0 17 * * 1'   # Lunes    11:00 AM México Centro
+    - cron: '0 17 * * 4'   # Jueves   11:00 AM México Centro
+    - cron: '0 17 * * 6'   # Sábado   11:00 AM México Centro
+  workflow_dispatch:        # Permite correrlo manualmente
 
 permissions:
-  contents: write          # NECESARIO para hacer commit de resultados
+  contents: write
 
 jobs:
   update-results:
@@ -37,7 +36,6 @@ jobs:
 
       - name: Correr Jefe Maestro
         run: python core/system/main_run.py
-
         env:
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
@@ -47,7 +45,7 @@ jobs:
         run: |
           git config user.name  "Jefe Maestro Bot"
           git config user.email "actions@github.com"
-          git add results/
+          git add results/ || true
           git add predictions_history_v8.json || true
           git add backtest_history_v8.json    || true
           git add data/melate.csv data/revancha.csv data/revanchita.csv || true
