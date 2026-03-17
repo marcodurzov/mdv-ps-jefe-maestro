@@ -902,7 +902,7 @@ def worker_score_batch(args):
         h30=st.get("hot30",{}); gd=st.get("gap",{})
         ksd=st.get("ks",{});    cd=st.get("cooc",{})
         hs=np.array([sum(float(h30.get(str(n),0.)) for n in c) for c in combos],dtype=np.float32)
-        gs=np.array([float(np.mean([float(gd.get(str(n),1.)) for n in c])) for c in combos],dtype=np.float32)
+                gs=np.array([float(np.mean([float(gd.get(str(n),1.)) for n in c])) for c in combos],dtype=np.float32)
         ks=np.array([float(np.mean([float(ksd.get(str(n),0.)) for n in c])) for c in combos],dtype=np.float32)
         cs=np.array([float(np.mean([float(cd.get(f"{min(a,b)}_{max(a,b)}",1.))
                     for i,a in enumerate(c) for b in c[i+1:]])) for c in combos],dtype=np.float32)
@@ -911,13 +911,11 @@ def worker_score_batch(args):
         ps=1.-np.abs(ev-k/2.)/(k/2.+1e-9)
         mn_s=sum(range(1,k+1)); mx_s=sum(range(n_max-k+1,n_max+1))
         sb=1.-np.abs(sm-(mn_s+mx_s)/2.)/((mx_s-mn_s) or 1.)
-                                hum=np.array([float(_is_date_like(c) or max(sum(1 for i in range(len(c)-1) if c[i+1]==c[i]+1), max(sum(1 for n in c if n%f==0) for f in range(2,8)))>=4 or sum(1 for n in c if 34<=n<=43)>=4)
+        hum=np.array([float(_is_date_like(c) or max(sum(1 for i in range(len(c)-1) if c[i+1]==c[i]+1), max(sum(1 for n in c if n%f==0) for f in range(2,8)))>=4 or sum(1 for n in c if 34<=n<=43)>=4)
                       for c in combos],dtype=np.float32)
-                      for c in combos],dtype=np.float32)
-        
-                local=(GAMMA_HOT*_norm(hs)+ETA_GAP*_norm(gs)+DELTA_KS*_norm(ks)
+        local=(GAMMA_HOT*_norm(hs)+ETA_GAP*_norm(gs)+DELTA_KS*_norm(ks)
                +THETA_COV*_norm(cs)+EPS_PAR*ps+ZETA_SUM*sb
-                              -IOTA_HUM*hum)
+               -IOTA_HUM*hum)
         refine+=local/len(WORKER_NAMES)
     # Global composite con temperature scaling
     stk=np.stack([per_lot.get(n,np.zeros(m)) for n in WORKER_NAMES],axis=1)
