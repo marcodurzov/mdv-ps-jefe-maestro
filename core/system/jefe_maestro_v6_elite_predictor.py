@@ -915,8 +915,6 @@ def worker_score_batch(args):
                       max(sum(1 for i in range(len(c)-1) if c[i+1]==c[i]+1),
                           max(sum(1 for n in c if n%f==0) for f in range(2,8)))>=4)
                       for c in combos],dtype=np.float32)
-
-        # Penalización adicional: 4+ números en rango 34-43
         hot_band=np.array([float(sum(1 for n in c if 34<=n<=43)>=4)
                            for c in combos],dtype=np.float32)
                 local=(GAMMA_HOT*_norm(hs)+ETA_GAP*_norm(gs)+DELTA_KS*_norm(ks)
