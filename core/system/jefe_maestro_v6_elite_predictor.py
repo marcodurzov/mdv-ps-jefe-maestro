@@ -1128,10 +1128,12 @@ def save_predictions(df:pd.DataFrame, date_str:str, bt:Dict):
 # EMAIL
 # ─────────────────────────────────────────────────────────────────────
 
-def send_email_results(df:pd.DataFrame, stats:Dict, bt:Dict, ts:str) -> bool:
+def send_email_results(df:pd.DataFrame, stats:Dict, bt:Dict, ts:str,
+                       html_aciertos_extra:str="") -> bool:
     if not all([EMAIL_FROM,EMAIL_PASS,EMAIL_TO]):
         logger.warning("Credenciales email no configuradas"); return False
     cov=stats.get("coverage_pct",0); light=stats.get("light",False)
+    seccion_aciertos = html_aciertos_extra if html_aciertos_extra else ""
     rows_h=""
     for i,(_,row) in enumerate(df.iterrows(),1):
         combo=" ".join(f"{int(x):02d}" for x in sorted(row["combo"]))
@@ -1152,6 +1154,7 @@ def send_email_results(df:pd.DataFrame, stats:Dict, bt:Dict, ts:str) -> bool:
 <p><b>Generado:</b> {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} &nbsp;
 <b>Modo:</b> {'⚡ Light' if light else '🚀 Full'} &nbsp;
 <b>Cobertura:</b> {cov:.1f}%</p>
+{seccion_aciertos}
 <h3 style='color:#2e75b6'>Top {TOP_K} Combinaciones (válidas para Melate, Revancha y Revanchita)</h3>
 <table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse;width:100%'>
 <tr style='background:#1a3a5c;color:white'><th>#</th><th>N1–N6</th><th>Score</th><th>Suma</th></tr>
@@ -1183,7 +1186,8 @@ Tus 6 números son los mismos para los 3 sorteos.</p>
 # PUNTO DE ENTRADA PÚBLICO (main_run.py lo llama)
 # ─────────────────────────────────────────────────────────────────────
 
-def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None):
+def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None,
+              html_aciertos_extra: str = ""):
     """Punto de entrada para main_run.py."""
     light=(_AUTO_LIGHT or
            os.getenv("LIGHT_MODE","").lower() in ("1","true","yes") or
@@ -1255,7 +1259,7 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None):
                 f,default=safe_json,ensure_ascii=False,indent=2)
         logger.info(f"Resultados: {out}")
     except Exception as e: logger.error(f"Error guardando: {e}")
-    send_email_results(df_top,run_s,bt_all,ts)
+    send_email_results(df_top,run_s,bt_all,ts,html_aciertos_extra)
     logger.info("✅ Completado.")
     return df_top, run_s
 
