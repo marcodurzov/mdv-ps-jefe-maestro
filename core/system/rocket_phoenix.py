@@ -45,7 +45,7 @@ LOTTERIES = {
     "Revanchita": {"k": 6, "has_bono": False},
 }
 
-MIN_SORTEOS_PARA_APRENDER = 10
+MIN_SORTEOS_PARA_APRENDER = 50
 
 
 # ─────────────────────────────────────────────────────────────────────
