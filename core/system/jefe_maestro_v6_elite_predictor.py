@@ -1291,7 +1291,7 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None,
     ts=datetime.now().strftime("%Y%m%d_%H%M%S")
     save_predictions(df_top,datetime.now().strftime("%Y-%m-%d"),bt_all)
     out=os.path.join(_RESULTS,f"v8_results_{ts}.json")
-    try:
+        try:
         with open(out,"w",encoding="utf-8") as f:
             json.dump({"combinaciones":[{"rank":i+1,
                 "combo_str":" ".join(f"{int(x):02d}" for x in sorted(row["combo"])),
@@ -1302,7 +1302,7 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None,
                 "run_stats":run_s,"backtest":bt_all},
                 f,default=safe_json,ensure_ascii=False,indent=2)
         logger.info(f"Resultados: {out}")
-        except Exception as e: logger.error(f"Error guardando: {e}")
+    except Exception as e: logger.error(f"Error guardando: {e}")
     send_email_results(df_top,run_s,bt_all,ts,
                        html_aciertos_extra + html_reporte_salud)
     return df_top, run_s
