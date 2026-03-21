@@ -179,7 +179,7 @@ def load_history_strict(name: str) -> pd.DataFrame:
         raise RuntimeError(f"CSV no encontrado: {path}")
     df = pd.read_csv(path)
     if df.empty:
-        raise RuntimeError(f"CSV vacío: {name}")
+        raise RuntimeError(f"CSV vacio: {name}")
     if "FECHA" in df.columns:
         df["FECHA"] = pd.to_datetime(df["FECHA"], dayfirst=True, errors="coerce")
     k = LOTTERIES[name]["k"]
@@ -191,13 +191,24 @@ def load_history_strict(name: str) -> pd.DataFrame:
     df = df.dropna(subset=num_cols)
     n_max = LOTTERIES[name]["n_max"]
     for col in num_cols:
-        if not df[col].between(1, n_max).all():
-            raise RuntimeError(f"Valores fuera de rango en {name}.{col}")
+        valid = df[col].between(1, n_max)
+        if not valid.all():
+            n_bad = (~valid).sum()
+            logger.warning(f"[{name}] {n_bad} filas con valores fuera de rango en {col} - eliminadas")
+            df = df[valid]
     if has_b:
         if "BONO" in df.columns:
             df["BONO"] = pd.to_numeric(df["BONO"], errors="coerce")
         else:
             df["BONO"] = np.nan
+    # BOLSA (pozo acumulado) - campo del formato oficial
+    if "BOLSA" in df.columns:
+        df["BOLSA"] = pd.to_numeric(df["BOLSA"], errors="coerce")
+    else:
+        df["BOLSA"] = np.nan
+    # CONCURSO (numero de sorteo) - campo del formato oficial
+    if "CONCURSO" in df.columns:
+        df["CONCURSO"] = pd.to_numeric(df["CONCURSO"], errors="coerce")
     df = df.sort_values("FECHA", ascending=False).reset_index(drop=True)
     df["FUENTE"] = name
     logger.info(f"[{name}] CSV encontrado en: {path} ({len(df)} filas brutas)")
