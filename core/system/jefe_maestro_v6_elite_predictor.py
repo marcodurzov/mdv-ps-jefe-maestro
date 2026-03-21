@@ -104,6 +104,11 @@ except Exception:
     TENSORFLOW_AVAILABLE = False
 
 from imblearn.over_sampling import SMOTE, RandomOverSampler
+try:
+    from advanced_stats import load_or_build_all, score_combos_advanced, generar_html_reporte
+    ADVANCED_STATS_AVAILABLE = True
+except Exception:
+    ADVANCED_STATS_AVAILABLE = False
 import requests, smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -1210,6 +1215,14 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None,
     stats_all={}
     for name,df in all_h.items():
         stats_all[name]=load_or_build_stats(df,name)
+        # Estadísticas avanzadas (TC + BIAS + ANTI + DOW + BREAKS)
+    as_data_all = {}
+    if ADVANCED_STATS_AVAILABLE:
+        try:
+            as_data_all = load_or_build_all(all_h)
+            logger.info("Estadísticas avanzadas cargadas correctamente")
+        except Exception as e:
+            logger.warning(f"Advanced stats falló (no crítico): {e}")
     # Modelos + backtest
     mf={}; bt_all={}
     for name,df in all_h.items():
@@ -1228,7 +1241,36 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None,
                        for k,v in st.items()}
     # Pipeline
     try:
-        df_top,run_s=run_pipeline(all_h,mf,stats_s,light)
+            df_top,run_s=run_pipeline(all_h,mf,stats_s,light)
+
+    # Aplicar score avanzado al top final
+    if ADVANCED_STATS_AVAILABLE and as_data_all:
+        try:
+            n_max = next(iter(LOTTERIES.values()))["n_max"]
+            last_combos = {}
+            for name,df in all_h.items():
+                ncols=[f"N{i}" for i in range(1,7)]
+                last_combos[name]=[int(df.iloc[0][c]) for c in ncols if pd.notna(df.iloc[0].get(c))]
+            combos_t=[tuple(row["combo"]) for _,row in df_top.iterrows()]
+            as_scores=np.ones(len(combos_t),dtype=np.float32)
+            for name,as_data in as_data_all.items():
+                last=last_combos.get(name,[])
+                if last:
+                    s=score_combos_advanced(combos_t,as_data,last,n_max)
+                    as_scores*=np.power(s,1/len(as_data_all))
+            df_top["global_composite"]=df_top["global_composite"]*as_scores
+            df_top=df_top.sort_values("global_composite",ascending=False).reset_index(drop=True)
+            logger.info("Score avanzado aplicado al top final")
+        except Exception as e:
+            logger.warning(f"Score avanzado falló (no crítico): {e}")
+
+    # Reporte de salud estadística para el correo
+    html_reporte_salud = ""
+    if ADVANCED_STATS_AVAILABLE and as_data_all:
+        try:
+            html_reporte_salud = generar_html_reporte(as_data_all)
+        except Exception:
+            pass
     except Exception as e: _abort(f"Pipeline falló: {e}")
     # Log
     logger.info("═"*60); logger.info("TOP COMBINACIONES v8.0 Final Supreme")
@@ -1259,7 +1301,8 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None,
                 f,default=safe_json,ensure_ascii=False,indent=2)
         logger.info(f"Resultados: {out}")
     except Exception as e: logger.error(f"Error guardando: {e}")
-    send_email_results(df_top,run_s,bt_all,ts,html_aciertos_extra)
+        send_email_results(df_top,run_s,bt_all,ts,
+                       html_aciertos_extra + html_reporte_salud)
     logger.info("✅ Completado.")
     return df_top, run_s
 
