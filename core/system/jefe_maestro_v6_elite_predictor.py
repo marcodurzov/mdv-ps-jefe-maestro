@@ -1241,9 +1241,12 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None,
                        for k,v in st.items()}
     # Pipeline
     try:
-            df_top,run_s=run_pipeline(all_h,mf,stats_s,light)
+        df_top,run_s=run_pipeline(all_h,mf,stats_s,light)
+    except Exception as e:
+        _abort(f"Pipeline falló: {e}")
 
     # Aplicar score avanzado al top final
+
     if ADVANCED_STATS_AVAILABLE and as_data_all:
         try:
             n_max = next(iter(LOTTERIES.values()))["n_max"]
