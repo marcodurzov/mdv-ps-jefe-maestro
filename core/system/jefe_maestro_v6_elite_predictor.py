@@ -1302,10 +1302,9 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None,
                 "run_stats":run_s,"backtest":bt_all},
                 f,default=safe_json,ensure_ascii=False,indent=2)
         logger.info(f"Resultados: {out}")
-    except Exception as e: logger.error(f"Error guardando: {e}")
-        send_email_results(df_top,run_s,bt_all,ts,
+        except Exception as e: logger.error(f"Error guardando: {e}")
+    send_email_results(df_top,run_s,bt_all,ts,
                        html_aciertos_extra + html_reporte_salud)
-    logger.info("✅ Completado.")
     return df_top, run_s
 
 # ─────────────────────────────────────────────────────────────────────
