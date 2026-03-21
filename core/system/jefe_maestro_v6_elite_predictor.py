@@ -1267,14 +1267,13 @@ def run_model(histories_override: Optional[Dict[str,pd.DataFrame]]=None,
         except Exception as e:
             logger.warning(f"Score avanzado falló (no crítico): {e}")
 
-    # Reporte de salud estadística para el correo
+        # Reporte de salud estadística para el correo
     html_reporte_salud = ""
     if ADVANCED_STATS_AVAILABLE and as_data_all:
         try:
             html_reporte_salud = generar_html_reporte(as_data_all)
         except Exception:
             pass
-    except Exception as e: _abort(f"Pipeline falló: {e}")
     # Log
     logger.info("═"*60); logger.info("TOP COMBINACIONES v8.0 Final Supreme")
     logger.info(f"Cobertura portfolio: {run_s.get('coverage_pct',0):.1f}%")
