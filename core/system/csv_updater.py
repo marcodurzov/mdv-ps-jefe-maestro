@@ -51,11 +51,12 @@ GAME_CONFIG = {
         "n_balls":  6,
         "bono_col": "R7",
         "local_cols": ["FECHA","CONCURSO","N1","N2","N3","N4","N5","N6","BONO","BOLSA"],
-    },
-    "Revancha": {
+        },
+    "Revanchita": {
         "has_bono": False,
         "n_balls":  6,
         "bono_col": None,
+        "ball_prefix": "F",
         "local_cols": ["FECHA","CONCURSO","N1","N2","N3","N4","N5","N6","BOLSA"],
     },
         "Revanchita": {
