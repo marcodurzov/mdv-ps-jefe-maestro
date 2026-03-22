@@ -62,6 +62,12 @@ try:
 except Exception:
     SOCIAL_BIAS_AVAILABLE = False
 
+try:
+    from information_theory import load_or_build_it, score_it_batch, generar_html_it
+    IT_AVAILABLE = True
+except Exception:
+    IT_AVAILABLE = False
+
 from imblearn.over_sampling import SMOTE, RandomOverSampler
 import requests, smtplib
 from email.mime.multipart import MIMEMultipart
@@ -1141,6 +1147,15 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
         except Exception as e:
             logger.warning(f"Social bias fallo (no critico): {e}")
 
+    # Teoria de la informacion (MI + estacional + caos)
+    it_data_all = {}
+    if IT_AVAILABLE:
+        try:
+            it_data_all = load_or_build_it(all_h)
+            logger.info("IT cargado correctamente")
+        except Exception as e:
+            logger.warning(f"IT fallo: {e}")
+
     # Modelos + backtest
     mf = {}; bt_all = {}
     for name, df in all_h.items():
@@ -1202,6 +1217,20 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
         except Exception as e:
             logger.warning(f"Score social bias fallo (no critico): {e}")
 
+    # Score IT
+    if IT_AVAILABLE and it_data_all:
+        try:
+            combos_t = [tuple(row["combo"]) for _, row in df_top.iterrows()]
+            it_scores = np.ones(len(combos_t), dtype=np.float32)
+            for name, it_data in it_data_all.items():
+                s = score_it_batch(combos_t, it_data, n_max)
+                it_scores *= np.power(s, 1/len(it_data_all))
+            df_top["global_composite"] = df_top["global_composite"] * it_scores
+            df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
+            logger.info("Score IT aplicado")
+        except Exception as e:
+            logger.warning(f"IT scoring fallo: {e}")
+
     # Reporte de salud estadística
     html_reporte_salud = ""
     if ADVANCED_STATS_AVAILABLE and as_data_all:
@@ -1214,6 +1243,12 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
     if SOCIAL_BIAS_AVAILABLE and sb_data_all:
         try:
             html_social = generar_html_social({n: d.get("bolsa",{}) for n,d in sb_data_all.items()})
+        except Exception:
+            pass
+    html_it = ""
+    if IT_AVAILABLE and it_data_all:
+        try:
+            html_it = generar_html_it(it_data_all)
         except Exception:
             pass
 
@@ -1251,7 +1286,7 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
         logger.error(f"Error guardando: {e}")
 
     send_email_results(df_top, run_s, bt_all, ts,
-                       html_aciertos_extra + html_reporte_salud + html_social)
+                       html_aciertos_extra + html_reporte_salud + html_social + html_it)
     logger.info("✅ Completado.")
     return df_top, run_s
 
