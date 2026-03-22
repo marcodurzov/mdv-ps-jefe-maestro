@@ -126,9 +126,9 @@ def parse_official(df_raw: pd.DataFrame, game: str) -> pd.DataFrame:
             # Numero de sorteo
             concurso = int(row["CONCURSO"])
 
-            # Numeros principales R1-R6
+            #            # Numeros principales R1-R6
             nums = []
-                        prefix = cfg.get("ball_prefix", "R")
+            prefix = cfg.get("ball_prefix", "R")
             for i in range(1, cfg["n_balls"] + 1):
                 col = f"{prefix}{i}"
                 v = int(row[col])
