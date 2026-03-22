@@ -928,7 +928,7 @@ def build_portfolio(df_top: pd.DataFrame, top_k: int,
     final_idx = []
     for i, (_, row) in enumerate(result.iterrows()):
         combo = row["combo"]
-        if all(num_count.get(n, 0) < 8 for n in combo):
+                if all(num_count.get(n, 0) < 12 for n in combo):
             final_idx.append(i)
             for n in combo:
                 num_count[n] = num_count.get(n, 0) + 1
