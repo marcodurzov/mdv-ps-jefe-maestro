@@ -58,12 +58,14 @@ GAME_CONFIG = {
         "bono_col": None,
         "local_cols": ["FECHA","CONCURSO","N1","N2","N3","N4","N5","N6","BOLSA"],
     },
-    "Revanchita": {
+        "Revanchita": {
         "has_bono": False,
         "n_balls":  6,
         "bono_col": None,
+        "ball_prefix": "F",
         "local_cols": ["FECHA","CONCURSO","N1","N2","N3","N4","N5","N6","BOLSA"],
     },
+
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -126,8 +128,9 @@ def parse_official(df_raw: pd.DataFrame, game: str) -> pd.DataFrame:
 
             # Numeros principales R1-R6
             nums = []
+                        prefix = cfg.get("ball_prefix", "R")
             for i in range(1, cfg["n_balls"] + 1):
-                col = f"R{i}"
+                col = f"{prefix}{i}"
                 v = int(row[col])
                 if not (1 <= v <= 56):
                     raise ValueError(f"Numero fuera de rango: {v}")
