@@ -884,7 +884,7 @@ def expand_sa(top: List[Tuple], n_max: int, k: int,
 # ─────────────────────────────────────────────────────────────────────
 
 def build_portfolio(df_top: pd.DataFrame, top_k: int,
-                    lam: float = 0.30, bw: int = 5) -> pd.DataFrame:
+                    lam: float = 0.45, bw: int = 5) -> pd.DataFrame:
     if len(df_top) <= top_k: return df_top
     rows = df_top.to_dict("records")
     sc = np.array([r["global_composite"] for r in rows])
