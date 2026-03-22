@@ -56,6 +56,12 @@ try:
 except Exception:
     ADVANCED_STATS_AVAILABLE = False
 
+try:
+    from social_bias import load_or_build_social, score_social_bias_batch, generar_html_social
+    SOCIAL_BIAS_AVAILABLE = True
+except Exception:
+    SOCIAL_BIAS_AVAILABLE = False
+
 from imblearn.over_sampling import SMOTE, RandomOverSampler
 import requests, smtplib
 from email.mime.multipart import MIMEMultipart
@@ -884,7 +890,7 @@ def expand_sa(top: List[Tuple], n_max: int, k: int,
 # ─────────────────────────────────────────────────────────────────────
 
 def build_portfolio(df_top: pd.DataFrame, top_k: int,
-                    lam: float = 0.45, bw: int = 5) -> pd.DataFrame:
+                    lam: float = 0.30, bw: int = 5) -> pd.DataFrame:
     if len(df_top) <= top_k: return df_top
     rows = df_top.to_dict("records")
     sc = np.array([r["global_composite"] for r in rows])
@@ -922,19 +928,6 @@ def build_portfolio(df_top: pd.DataFrame, top_k: int,
         else: no_imp = 0
         prev_b = best_now
     idx = beams[0][1] if beams else list(range(min(top_k, len(rows))))
-        # Limitar apariciones de un mismo numero en el portfolio final
-    result = df_top.iloc[idx].reset_index(drop=True)
-    num_count: Dict[int, int] = {}
-    final_idx = []
-    for i, (_, row) in enumerate(result.iterrows()):
-        combo = row["combo"]
-                if all(num_count.get(n, 0) < 12 for n in combo):
-            final_idx.append(i)
-            for n in combo:
-                num_count[n] = num_count.get(n, 0) + 1
-    if len(final_idx) >= top_k // 2:
-        return result.iloc[final_idx].reset_index(drop=True)
-    return result
     return df_top.iloc[idx].reset_index(drop=True)
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1139,6 +1132,15 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
         except Exception as e:
             logger.warning(f"Advanced stats falló (no crítico): {e}")
 
+    # Sesgo social del jugador (impopularidad + analisis BOLSA)
+    sb_data_all = {}
+    if SOCIAL_BIAS_AVAILABLE:
+        try:
+            sb_data_all = load_or_build_social(all_h)
+            logger.info("Sesgo social cargado correctamente")
+        except Exception as e:
+            logger.warning(f"Social bias fallo (no critico): {e}")
+
     # Modelos + backtest
     mf = {}; bt_all = {}
     for name, df in all_h.items():
@@ -1183,13 +1185,35 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
             df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
             logger.info("Score avanzado aplicado al top final")
         except Exception as e:
-            logger.warning(f"Score avanzado falló (no crítico): {e}")
+            logger.warning(f"Score avanzado fallo (no critico): {e}")
+
+    # Aplicar score de sesgo social
+    if SOCIAL_BIAS_AVAILABLE and sb_data_all:
+        try:
+            combos_t = [tuple(row["combo"]) for _, row in df_top.iterrows()]
+            sb_scores = np.ones(len(combos_t), dtype=np.float32)
+            for name, sb_data in sb_data_all.items():
+                bolsa_d = sb_data.get("bolsa", {})
+                s = score_social_bias_batch(combos_t, bolsa_d, n_max)
+                sb_scores *= np.power(s, 1/len(sb_data_all))
+            df_top["global_composite"] = df_top["global_composite"] * sb_scores
+            df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
+            logger.info("Score de sesgo social aplicado")
+        except Exception as e:
+            logger.warning(f"Score social bias fallo (no critico): {e}")
 
     # Reporte de salud estadística
     html_reporte_salud = ""
     if ADVANCED_STATS_AVAILABLE and as_data_all:
         try:
             html_reporte_salud = generar_html_reporte(as_data_all)
+        except Exception:
+            pass
+
+    html_social = ""
+    if SOCIAL_BIAS_AVAILABLE and sb_data_all:
+        try:
+            html_social = generar_html_social({n: d.get("bolsa",{}) for n,d in sb_data_all.items()})
         except Exception:
             pass
 
@@ -1227,7 +1251,7 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
         logger.error(f"Error guardando: {e}")
 
     send_email_results(df_top, run_s, bt_all, ts,
-                       html_aciertos_extra + html_reporte_salud)
+                       html_aciertos_extra + html_reporte_salud + html_social)
     logger.info("✅ Completado.")
     return df_top, run_s
 
