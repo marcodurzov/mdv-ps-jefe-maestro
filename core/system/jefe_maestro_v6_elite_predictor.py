@@ -1196,7 +1196,7 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
                 if last:
                     s = score_combos_advanced(combos_t, as_data, last, n_max)
                     as_scores *= np.power(s, 1 / len(as_data_all))
-            df_top["global_composite"] = df_top["global_composite"] * as_scores
+            df_top["global_composite"] = df_top["global_composite"] * (0.7 + 0.3 * as_scores)
             df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
             logger.info("Score avanzado aplicado al top final")
         except Exception as e:
@@ -1211,7 +1211,7 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
                 bolsa_d = sb_data.get("bolsa", {})
                 s = score_social_bias_batch(combos_t, bolsa_d, n_max)
                 sb_scores *= np.power(s, 1/len(sb_data_all))
-            df_top["global_composite"] = df_top["global_composite"] * sb_scores
+            df_top["global_composite"] = df_top["global_composite"] * (0.85 + 0.15 * sb_scores)
             df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
             logger.info("Score de sesgo social aplicado")
         except Exception as e:
@@ -1225,7 +1225,7 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
             for name, it_data in it_data_all.items():
                 s = score_it_batch(combos_t, it_data, n_max)
                 it_scores *= np.power(s, 1/len(it_data_all))
-            df_top["global_composite"] = df_top["global_composite"] * it_scores
+            df_top["global_composite"] = df_top["global_composite"] * (0.85 + 0.15 * it_scores)
             df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
             logger.info("Score IT aplicado")
         except Exception as e:
