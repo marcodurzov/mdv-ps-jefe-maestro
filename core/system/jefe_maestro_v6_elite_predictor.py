@@ -137,7 +137,7 @@ _PRERANK_FULL  = 160_000; _TARGET_FULL  = 2_000_000; _NEIGH_FULL  = 25
 _PRERANK_LIGHT =  40_000; _TARGET_LIGHT =   500_000; _NEIGH_LIGHT = 15
 PRERANK_TOP    = int(os.getenv("PRERANK_TOP", "30000"))
 
-MIN_SUM = 60; MAX_SUM = 210; MAX_CONSEC = 4
+MIN_SUM = 120; MAX_SUM = 210; MAX_CONSEC = 4
 
 EMAIL_FROM  = os.getenv("EMAIL_USER")
 EMAIL_PASS  = os.getenv("EMAIL_PASS")
@@ -715,6 +715,8 @@ def manage_results_storage(max_mb: float = 400.0):
 def is_plausible(c: tuple) -> bool:
     s = sum(c)
     if not (MIN_SUM <= s <= MAX_SUM): return False
+    # Al menos un numero >= 40 (evitar combinaciones solo de numeros bajos)
+    if max(c) < 40: return False
     cons = mr = 1
     for i in range(len(c) - 1):
         if c[i + 1] == c[i] + 1: cons += 1; mr = max(mr, cons)
