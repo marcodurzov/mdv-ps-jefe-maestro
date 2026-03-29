@@ -716,7 +716,7 @@ def is_plausible(c: tuple) -> bool:
     s = sum(c)
     if not (MIN_SUM <= s <= MAX_SUM): return False
     # Al menos un numero >= 40 (evitar combinaciones solo de numeros bajos)
-    if max(c) < 40: return False
+    if max(c) < 35: return False
     cons = mr = 1
     for i in range(len(c) - 1):
         if c[i + 1] == c[i] + 1: cons += 1; mr = max(mr, cons)
