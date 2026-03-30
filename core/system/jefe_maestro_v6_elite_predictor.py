@@ -137,7 +137,7 @@ _PRERANK_FULL  = 160_000; _TARGET_FULL  = 2_000_000; _NEIGH_FULL  = 25
 _PRERANK_LIGHT =  40_000; _TARGET_LIGHT =   500_000; _NEIGH_LIGHT = 15
 PRERANK_TOP    = int(os.getenv("PRERANK_TOP", "30000"))
 
-MIN_SUM = 120; MAX_SUM = 210; MAX_CONSEC = 4
+MIN_SUM = 60; MAX_SUM = 210; MAX_CONSEC = 4
 
 EMAIL_FROM  = os.getenv("EMAIL_USER")
 EMAIL_PASS  = os.getenv("EMAIL_PASS")
@@ -715,7 +715,6 @@ def manage_results_storage(max_mb: float = 400.0):
 def is_plausible(c: tuple) -> bool:
     s = sum(c)
     if not (MIN_SUM <= s <= MAX_SUM): return False
-    # Al menos un numero >= 40 (evitar combinaciones solo de numeros bajos)
     if max(c) < 35: return False
     cons = mr = 1
     for i in range(len(c) - 1):
@@ -1198,7 +1197,7 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
                 if last:
                     s = score_combos_advanced(combos_t, as_data, last, n_max)
                     as_scores *= np.power(s, 1 / len(as_data_all))
-            df_top["global_composite"] = df_top["global_composite"] * (0.7 + 0.3 * as_scores)
+            df_top["global_composite"] = df_top["global_composite"] * as_scores
             df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
             logger.info("Score avanzado aplicado al top final")
         except Exception as e:
@@ -1213,7 +1212,7 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
                 bolsa_d = sb_data.get("bolsa", {})
                 s = score_social_bias_batch(combos_t, bolsa_d, n_max)
                 sb_scores *= np.power(s, 1/len(sb_data_all))
-            df_top["global_composite"] = df_top["global_composite"] * (0.85 + 0.15 * sb_scores)
+            df_top["global_composite"] = df_top["global_composite"] * sb_scores
             df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
             logger.info("Score de sesgo social aplicado")
         except Exception as e:
@@ -1227,11 +1226,33 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
             for name, it_data in it_data_all.items():
                 s = score_it_batch(combos_t, it_data, n_max)
                 it_scores *= np.power(s, 1/len(it_data_all))
-            df_top["global_composite"] = df_top["global_composite"] * (0.85 + 0.15 * it_scores)
+            df_top["global_composite"] = df_top["global_composite"] * it_scores
             df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
             logger.info("Score IT aplicado")
         except Exception as e:
             logger.warning(f"IT scoring fallo: {e}")
+
+    # Score orientado a premios: favorece P(>=3 aciertos)
+    try:
+        combos_t = [tuple(row["combo"]) for _, row in df_top.iterrows()]
+        prize_scores = np.ones(len(combos_t), dtype=np.float32)
+        for name, st in stats_all.items():
+            h30  = st.get("hot30", {})
+            cooc = st.get("cooc", {})
+            for idx_c, combo in enumerate(combos_t):
+                hot_vals = sorted([float(h30.get(str(n), 0.)) for n in combo], reverse=True)
+                top3_hot = sum(hot_vals[:3])
+                pair_cooc = [float(cooc.get(f"{min(a,b)}_{max(a,b)}", 1.0))
+                             for i,a in enumerate(combo) for b in combo[i+1:]]
+                avg_cooc = float(np.mean(pair_cooc)) if pair_cooc else 1.0
+                prize_scores[idx_c] *= (1.0 + 0.15 * top3_hot + 0.05 * (avg_cooc - 1.0))
+        mn, mx = prize_scores.min(), prize_scores.max()
+        prize_norm = 0.90 + 0.10 * (prize_scores - mn) / (mx - mn + 1e-9)
+        df_top["global_composite"] = df_top["global_composite"] * prize_norm
+        df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
+        logger.info("Score orientado a premios aplicado")
+    except Exception as e:
+        logger.warning(f"Prize scoring fallo: {e}")
 
     # Reporte de salud estadística
     html_reporte_salud = ""
