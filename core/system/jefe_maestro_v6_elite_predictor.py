@@ -935,7 +935,18 @@ def build_portfolio(df_top: pd.DataFrame, top_k: int,
         else: no_imp = 0
         prev_b = best_now
     idx = beams[0][1] if beams else list(range(min(top_k, len(rows))))
-    return df_top.iloc[idx].reset_index(drop=True)
+    result = df_top.iloc[idx].reset_index(drop=True)
+    num_count: Dict[int, int] = {}
+    final_idx = []
+    for i, (_, row) in enumerate(result.iterrows()):
+        combo = row["combo"]
+        if all(num_count.get(n, 0) < 8 for n in combo):
+            final_idx.append(i)
+            for n in combo:
+                num_count[n] = num_count.get(n, 0) + 1
+    if len(final_idx) >= top_k // 2:
+        return result.iloc[final_idx].reset_index(drop=True)
+    return result
 
 # ─────────────────────────────────────────────────────────────────────
 # RUNNER DE BATCHES
@@ -962,18 +973,8 @@ def _run_batches(batches: list, mf: Dict, stats: Dict, light: bool, phase: str) 
         for b in batches:
             r = worker_score_batch(b)
             if r: results.extend(r)
-              # Limitar apariciones por numero
-    num_count: Dict[int, int] = {}
-    final_idx = []
-    for i, (_, row) in enumerate(result.iterrows()):
-        combo = row["combo"]
-        if all(num_count.get(n, 0) < 8 for n in combo):
-            final_idx.append(i)
-            for n in combo:
-                num_count[n] = num_count.get(n, 0) + 1
-    if len(final_idx) >= top_k // 2:
-        result = result.iloc[final_idx].reset_index(drop=True)
     return results
+             
 
 # ─────────────────────────────────────────────────────────────────────
 # PIPELINE
