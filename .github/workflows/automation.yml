@@ -50,8 +50,8 @@ jobs:
           git add backtest_history_v8.json    || true
           git add data/melate.csv data/revancha.csv data/revanchita.csv || true
           git add rocket_phoenix_tracking.json || true
+          git add retroactive_tracking.json || true
+          git add reinforced_*.json || true
           git diff --staged --quiet || git commit -m "🎰 Resultados $(date '+%Y-%m-%d %H:%M') UTC"
           git push
-          git add retroactive_tracking.json || true
-          git add reinforced_examples_*.json || true
 
