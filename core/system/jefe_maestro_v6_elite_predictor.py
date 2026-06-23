@@ -68,6 +68,12 @@ try:
 except Exception:
     IT_AVAILABLE = False
 
+try:
+    from retroactive_learner import run_retroactive_learning, generar_html_retroactivo
+    RETROACTIVE_AVAILABLE = True
+except Exception:
+    RETROACTIVE_AVAILABLE = False
+
 from imblearn.over_sampling import SMOTE, RandomOverSampler
 import requests, smtplib
 from email.mime.multipart import MIMEMultipart
@@ -137,7 +143,7 @@ _PRERANK_FULL  = 160_000; _TARGET_FULL  = 2_000_000; _NEIGH_FULL  = 25
 _PRERANK_LIGHT =  40_000; _TARGET_LIGHT =   500_000; _NEIGH_LIGHT = 15
 PRERANK_TOP    = int(os.getenv("PRERANK_TOP", "30000"))
 
-MIN_SUM = 115; MAX_SUM = 225; MAX_CONSEC = 4
+MIN_SUM = 60; MAX_SUM = 210; MAX_CONSEC = 4
 
 EMAIL_FROM  = os.getenv("EMAIL_USER")
 EMAIL_PASS  = os.getenv("EMAIL_PASS")
@@ -935,18 +941,7 @@ def build_portfolio(df_top: pd.DataFrame, top_k: int,
         else: no_imp = 0
         prev_b = best_now
     idx = beams[0][1] if beams else list(range(min(top_k, len(rows))))
-    result = df_top.iloc[idx].reset_index(drop=True)
-    num_count: Dict[int, int] = {}
-    final_idx = []
-    for i, (_, row) in enumerate(result.iterrows()):
-        combo = row["combo"]
-        if all(num_count.get(n, 0) < 8 for n in combo):
-            final_idx.append(i)
-            for n in combo:
-                num_count[n] = num_count.get(n, 0) + 1
-    if len(final_idx) >= top_k // 2:
-        return result.iloc[final_idx].reset_index(drop=True)
-    return result
+    return df_top.iloc[idx].reset_index(drop=True)
 
 # ─────────────────────────────────────────────────────────────────────
 # RUNNER DE BATCHES
@@ -974,7 +969,6 @@ def _run_batches(batches: list, mf: Dict, stats: Dict, light: bool, phase: str) 
             r = worker_score_batch(b)
             if r: results.extend(r)
     return results
-             
 
 # ─────────────────────────────────────────────────────────────────────
 # PIPELINE
@@ -1320,8 +1314,42 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
     except Exception as e:
         logger.error(f"Error guardando: {e}")
 
+    # Aprendizaje retroactivo: donde quedo la combo ganadora
+    html_retro = ""
+    if RETROACTIVE_AVAILABLE:
+        try:
+            # Obtener resultados reales del ultimo sorteo desde los CSVs
+            winning_combos = {}
+            ncols = ["N%d" % i for i in range(1, 7)]
+            for name, df in all_h.items():
+                try:
+                    row = df.iloc[0]
+                    nums = [int(row[c]) for c in ncols if pd.notna(row.get(c))]
+                    if len(nums) == 6:
+                        winning_combos[name] = nums
+                except Exception:
+                    pass
+
+            if winning_combos:
+                top20_by_name = {}
+                for name in winning_combos:
+                    top20_by_name[name] = [
+                        {"combo": row["combo"],
+                         "global_composite": float(row["global_composite"])}
+                        for _, row in df_top.iterrows()
+                    ]
+                retro = run_retroactive_learning(
+                    winning_combos=winning_combos,
+                    all_stats=stats_all,
+                    top20_by_name=top20_by_name,
+                )
+                html_retro = generar_html_retroactivo(retro)
+                logger.info("Aprendizaje retroactivo completado")
+        except Exception as e:
+            logger.warning(f"Retroactive learning fallo: {e}")
+
     send_email_results(df_top, run_s, bt_all, ts,
-                       html_aciertos_extra + html_reporte_salud + html_social + html_it)
+                       html_aciertos_extra + html_reporte_salud + html_social + html_it + html_retro)
     logger.info("✅ Completado.")
     return df_top, run_s
 
