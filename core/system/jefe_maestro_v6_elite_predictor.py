@@ -68,12 +68,6 @@ try:
 except Exception:
     IT_AVAILABLE = False
 
-try:
-    from retroactive_learner import run_retroactive_learning, generar_html_retroactivo
-    RETROACTIVE_AVAILABLE = True
-except Exception:
-    RETROACTIVE_AVAILABLE = False
-
 from imblearn.over_sampling import SMOTE, RandomOverSampler
 import requests, smtplib
 from email.mime.multipart import MIMEMultipart
@@ -1314,42 +1308,8 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
     except Exception as e:
         logger.error(f"Error guardando: {e}")
 
-    # Aprendizaje retroactivo: donde quedo la combo ganadora
-    html_retro = ""
-    if RETROACTIVE_AVAILABLE:
-        try:
-            # Obtener resultados reales del ultimo sorteo desde los CSVs
-            winning_combos = {}
-            ncols = ["N%d" % i for i in range(1, 7)]
-            for name, df in all_h.items():
-                try:
-                    row = df.iloc[0]
-                    nums = [int(row[c]) for c in ncols if pd.notna(row.get(c))]
-                    if len(nums) == 6:
-                        winning_combos[name] = nums
-                except Exception:
-                    pass
-
-            if winning_combos:
-                top20_by_name = {}
-                for name in winning_combos:
-                    top20_by_name[name] = [
-                        {"combo": row["combo"],
-                         "global_composite": float(row["global_composite"])}
-                        for _, row in df_top.iterrows()
-                    ]
-                retro = run_retroactive_learning(
-                    winning_combos=winning_combos,
-                    all_stats=stats_all,
-                    top20_by_name=top20_by_name,
-                )
-                html_retro = generar_html_retroactivo(retro)
-                logger.info("Aprendizaje retroactivo completado")
-        except Exception as e:
-            logger.warning(f"Retroactive learning fallo: {e}")
-
     send_email_results(df_top, run_s, bt_all, ts,
-                       html_aciertos_extra + html_reporte_salud + html_social + html_it + html_retro)
+                       html_aciertos_extra + html_reporte_salud + html_social + html_it)
     logger.info("✅ Completado.")
     return df_top, run_s
 
