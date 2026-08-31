@@ -137,7 +137,7 @@ _PRERANK_FULL  = 160_000; _TARGET_FULL  = 2_000_000; _NEIGH_FULL  = 25
 _PRERANK_LIGHT =  40_000; _TARGET_LIGHT =   500_000; _NEIGH_LIGHT = 15
 PRERANK_TOP    = int(os.getenv("PRERANK_TOP", "30000"))
 
-MIN_SUM = 90; MAX_SUM = 230; MAX_CONSEC = 4
+MIN_SUM = 60; MAX_SUM = 210; MAX_CONSEC = 4
 
 EMAIL_FROM  = os.getenv("EMAIL_USER")
 EMAIL_PASS  = os.getenv("EMAIL_PASS")
@@ -715,7 +715,7 @@ def manage_results_storage(max_mb: float = 400.0):
 def is_plausible(c: tuple) -> bool:
     s = sum(c)
     if not (MIN_SUM <= s <= MAX_SUM): return False
-    if max(c) < 30: return False
+    if max(c) < 35: return False
     cons = mr = 1
     for i in range(len(c) - 1):
         if c[i + 1] == c[i] + 1: cons += 1; mr = max(mr, cons)
@@ -1181,10 +1181,15 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
     # Pipeline principal
     df_top, run_s = run_pipeline(all_h, mf, stats_s, light)
 
+    # n_max se define una sola vez aqui, fuera de cualquier bloque
+    # condicional, para que este disponible en TODOS los bloques
+    # de scoring (advanced_stats, social_bias, information_theory)
+    # sin importar cual corra primero o si alguno falla.
+    n_max = next(iter(LOTTERIES.values()))["n_max"]
+
     # Aplicar score avanzado al top final
     if ADVANCED_STATS_AVAILABLE and as_data_all:
         try:
-            n_max = next(iter(LOTTERIES.values()))["n_max"]
             ncols = [f"N{i}" for i in range(1, 7)]
             last_combos = {}
             for name, df in all_h.items():
