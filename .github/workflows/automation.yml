@@ -41,6 +41,13 @@ jobs:
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
           EMAIL_TO:   ${{ secrets.EMAIL_TO }}
 
+      - name: Migracion retroactiva (SOLO UNA VEZ - borrar despues)
+        run: python core/system/retroactive_migration.py --depth 150
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO:   ${{ secrets.EMAIL_TO }}
+
       - name: Guardar resultados en el repositorio
         run: |
           git config user.name  "Jefe Maestro Bot"
