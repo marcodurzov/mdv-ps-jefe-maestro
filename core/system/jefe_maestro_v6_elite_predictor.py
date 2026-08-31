@@ -68,6 +68,12 @@ try:
 except Exception:
     IT_AVAILABLE = False
 
+try:
+    from auto_tuner import load_tuned_config
+    AUTO_TUNER_AVAILABLE = True
+except Exception:
+    AUTO_TUNER_AVAILABLE = False
+
 from imblearn.over_sampling import SMOTE, RandomOverSampler
 import requests, smtplib
 from email.mime.multipart import MIMEMultipart
@@ -138,6 +144,19 @@ _PRERANK_LIGHT =  40_000; _TARGET_LIGHT =   500_000; _NEIGH_LIGHT = 15
 PRERANK_TOP    = int(os.getenv("PRERANK_TOP", "30000"))
 
 MIN_SUM = 60; MAX_SUM = 210; MAX_CONSEC = 4
+
+# Si el Auto-Tuner ya genero una configuracion optimizada basada en
+# evidencia real (retroactive_tracking.json), la aplicamos aqui.
+# Si no existe el archivo aun, se usan los defaults de arriba sin
+# ningun cambio de comportamiento.
+if AUTO_TUNER_AVAILABLE:
+    try:
+        _tuned = load_tuned_config()
+        if _tuned:
+            MIN_SUM = _tuned.get("MIN_SUM", MIN_SUM)
+            MAX_SUM = _tuned.get("MAX_SUM", MAX_SUM)
+    except Exception:
+        pass
 
 EMAIL_FROM  = os.getenv("EMAIL_USER")
 EMAIL_PASS  = os.getenv("EMAIL_PASS")
