@@ -14,6 +14,13 @@ except Exception as e:
     print("Retroactive learner no disponible: %s" % e)
     RETROACTIVE_OK = False
 
+try:
+    from auto_tuner import run_auto_tuner, generar_html_tuner
+    AUTO_TUNER_OK = True
+except Exception as e:
+    print("Auto-Tuner no disponible: %s" % e)
+    AUTO_TUNER_OK = False
+
 
 def main():
     # ── 1. Rocket Phoenix: aciertos del sorteo anterior ──
@@ -77,10 +84,27 @@ def main():
         except Exception as e:
             print("Retroactive Learner error (no critico): %s" % e)
 
-    # ── 3. Jefe Maestro: nuevas predicciones ──
+    # ── 3. Auto-Tuner: optimizar hiperparametros con evidencia real ──
+    html_tuner = ""
+    if AUTO_TUNER_OK:
+        print("\nAuto-Tuner evaluando configuracion...")
+        try:
+            resultado_tuner = run_auto_tuner()
+            html_tuner = generar_html_tuner(resultado_tuner)
+            if resultado_tuner.get("ejecutado"):
+                print("  Aplicado: %s | Mejora: %.1f%%" % (
+                    resultado_tuner.get("aplicado"),
+                    resultado_tuner.get("mejora_pct", 0)
+                ))
+            else:
+                print("  %s" % resultado_tuner.get("razon", ""))
+        except Exception as e:
+            print("Auto-Tuner error (no critico): %s" % e)
+
+    # ── 4. Jefe Maestro: nuevas predicciones ──
     print("\nJefe Maestro iniciando...")
     df, stats = run_model(
-        html_aciertos_extra=html_aciertos + html_retro
+        html_aciertos_extra=html_aciertos + html_retro + html_tuner
     )
 
     print("\nModelo ejecutado correctamente.")
