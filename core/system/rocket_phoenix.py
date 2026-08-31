@@ -261,24 +261,6 @@ def run_rocket_phoenix():
             for name in LOTTERIES:
                 _reajustar_modelo(name, tracking["sorteos"])
 
-        # Aprendizaje retroactivo: analizar por que el ganador no quedo en top 20
-        if RETROACTIVE_AVAILABLE and nuevos_sorteos:
-            try:
-                winning_combos = {
-                    s["lottery"]: s["resultado"]
-                    for s in nuevos_sorteos
-                }
-                logger.info("Ejecutando aprendizaje retroactivo...")
-                retro_report = run_retroactive_learning(
-                    winning_combos=winning_combos,
-                    all_stats={},       # stats se cargan desde cache en el modulo
-                    top20_by_name={},   # se llena desde el predictor principal
-                )
-                tracking["ultimo_retroactivo"] = datetime.now().isoformat()
-                _save_json(TRACKING_FILE, tracking)
-            except Exception as e:
-                logger.warning("Retroactive learning fallo: %s", e)
-
         logger.info("Rocket Phoenix completado.")
         return resumen
 
