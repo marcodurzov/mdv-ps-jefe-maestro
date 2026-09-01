@@ -43,7 +43,11 @@ def main():
         try:
             # Cargar historiales para el learner
             import pandas as pd
-                        _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            # FIX: main_run.py vive en core/system/, se necesitan 3
+            # niveles de dirname para llegar a la raiz del repositorio
+            # (system -> core -> raiz). Antes solo subia 2 niveles
+            # y apuntaba erroneamente a core/data en vez de data/.
+            _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             _DATA = os.path.join(_ROOT, "data")
 
             all_histories = {}
@@ -57,6 +61,8 @@ def main():
                     )
                     df = df.sort_values("_fecha_dt", ascending=False).reset_index(drop=True)
                     all_histories[game] = df
+                else:
+                    print("  ADVERTENCIA: CSV no encontrado en %s" % path)
 
             # Cargar stats desde cache si existen
             import joblib
@@ -81,6 +87,8 @@ def main():
                         data.get("estuvo_en_top20", False),
                         data.get("severidad", "?")
                     ))
+            else:
+                print("  Sin historiales cargados, se omite Retroactive Learner.")
         except Exception as e:
             print("Retroactive Learner error (no critico): %s" % e)
 
