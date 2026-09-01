@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-rocket_phoenix.py  v2
+rocket_phoenix.py  v3
 Loop de autoaprendizaje del Jefe Maestro.
-Mejora v2: muestra el ranking (#1-#20) de la mejor combinacion predicha.
+v2: muestra el ranking (#1-#20) de la mejor combinacion predicha.
+v3: FIX - la distribucion de aciertos quedaba vacia cuando un sorteo
+    ya habia sido trackeado en una corrida previa. Causa: JSON
+    convierte las claves de un dict a texto al guardarlas en disco
+    (0 -> "0"), pero el codigo buscaba con claves enteras al leerlas
+    de vuelta. Fix: se normalizan las claves a string en TODO el
+    ciclo de vida (guardado y lectura), eliminando el mismatch.
 """
 
 import os
@@ -106,7 +112,7 @@ def _calcular_aciertos(predicciones, resultado):
             "combo":   sorted(combo),
             "matches": matches,
             "score":   float(pred.get("global_composite", 0.0)),
-            "rank":    rank,   # posicion en el top 20 original
+            "rank":    rank,
         })
     return sorted(out, key=lambda x: x["matches"], reverse=True)
 
@@ -208,7 +214,11 @@ def run_rocket_phoenix():
                             "mejor":        s.get("mejor_combo", {}),
                             "max_matches":  s.get("max_matches", 0),
                             "avg_matches":  s.get("avg_matches", 0.0),
-                            "distribucion": s.get("distribucion", {}),
+                            # FIX: normalizar claves a string aqui tambien,
+                            # por si el archivo fue guardado con una version
+                            # anterior que uso claves enteras
+                            "distribucion": {str(k): v for k, v in
+                                             s.get("distribucion", {}).items()},
                         }
                 continue
 
@@ -221,7 +231,9 @@ def run_rocket_phoenix():
             max_m    = max((a["matches"] for a in aciertos), default=0)
             avg_m    = float(np.mean([a["matches"] for a in aciertos])) \
                        if aciertos else 0.0
-            dist     = {i: sum(1 for a in aciertos if a["matches"] == i)
+            # FIX: claves de distribucion como STRING desde el origen,
+            # para que coincidan siempre con lo que se lee de JSON
+            dist     = {str(i): sum(1 for a in aciertos if a["matches"] == i)
                         for i in range(7)}
             mejor    = aciertos[0] if aciertos else {}
 
@@ -301,12 +313,14 @@ def generar_html_aciertos(resumen):
         bono_str  = " + BONO <b>%02d</b>" % bono if bono else ""
         mejor_str = " ".join("%02d" % n for n in mejor.get("combo", []))
         mejor_m   = mejor.get("matches", 0)
-        mejor_rank = mejor.get("rank", "?")  # NUEVO: posicion en el ranking
+        mejor_rank = mejor.get("rank", "?")
         mejor_score = mejor.get("score", 0.0)
 
+        # FIX: siempre buscar con clave STRING (str(i)), sin importar
+        # si dist vino recien calculado o recargado desde JSON.
         dist_html = ""
         for i in range(6, -1, -1):
-            n = dist.get(i, 0)
+            n = dist.get(str(i), dist.get(i, 0))  # doble seguro: str e int
             if n > 0:
                 bar = "█" * n
                 dist_html += (
