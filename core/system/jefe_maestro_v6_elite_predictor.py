@@ -132,6 +132,36 @@ W_IF = 0.10; W_XGB = 0.35; W_LGBM = 0.20; W_CB = 0.15; W_LSTM = 0.20
 GAMMA_HOT = 0.06; DELTA_KS = 0.05; EPS_PAR = 0.04
 ZETA_SUM  = 0.04; ETA_GAP  = 0.06; THETA_COV = 0.05; IOTA_HUM = 0.08
 
+# Pesos de los modulos auxiliares (advanced_stats, social_bias, IT).
+# Defaults conservadores usados si el Auto-Tuner aun no ha corrido.
+W_ADVANCED_DEFAULT = 0.30
+W_SOCIAL_DEFAULT   = 0.15
+W_IT_DEFAULT        = 0.15
+MAX_APARICIONES_DEFAULT = 8
+
+# Si el Auto-Tuner ya optimizo la configuracion con evidencia real
+# (retroactive_tracking.json), se sobreescriben TODOS los parametros
+# ajustables: filtros de suma, penalizacion de patrones humanos,
+# pesos de los modulos auxiliares, y limite de repeticion por numero.
+# Si no existe configuracion tuneada aun, se usan los defaults de
+# arriba sin ningun cambio de comportamiento.
+W_ADVANCED = W_ADVANCED_DEFAULT
+W_SOCIAL   = W_SOCIAL_DEFAULT
+W_IT       = W_IT_DEFAULT
+MAX_APARICIONES = MAX_APARICIONES_DEFAULT
+
+if AUTO_TUNER_AVAILABLE:
+    try:
+        _tuned_w = load_tuned_config()
+        if _tuned_w:
+            IOTA_HUM        = _tuned_w.get("IOTA_HUM", IOTA_HUM)
+            W_ADVANCED      = _tuned_w.get("W_ADVANCED", W_ADVANCED)
+            W_SOCIAL        = _tuned_w.get("W_SOCIAL", W_SOCIAL)
+            W_IT            = _tuned_w.get("W_IT", W_IT)
+            MAX_APARICIONES = _tuned_w.get("MAX_APARICIONES", MAX_APARICIONES)
+    except Exception:
+        pass
+
 ALPHA_DECAY = 0.95
 SEED        = int(os.getenv("JM_SEED", "42"))
 np.random.seed(SEED); random.seed(SEED)
@@ -954,7 +984,22 @@ def build_portfolio(df_top: pd.DataFrame, top_k: int,
         else: no_imp = 0
         prev_b = best_now
     idx = beams[0][1] if beams else list(range(min(top_k, len(rows))))
-    return df_top.iloc[idx].reset_index(drop=True)
+    result = df_top.iloc[idx].reset_index(drop=True)
+
+    # Limitar apariciones de un mismo numero en el portfolio final.
+    # MAX_APARICIONES viene del Auto-Tuner si ya optimizo esto con
+    # evidencia real, o del default (8) si aun no ha corrido.
+    num_count: Dict[int, int] = {}
+    final_idx = []
+    for i, (_, row) in enumerate(result.iterrows()):
+        combo = row["combo"]
+        if all(num_count.get(n, 0) < MAX_APARICIONES for n in combo):
+            final_idx.append(i)
+            for n in combo:
+                num_count[n] = num_count.get(n, 0) + 1
+    if len(final_idx) >= top_k // 2:
+        return result.iloc[final_idx].reset_index(drop=True)
+    return result
 
 # ─────────────────────────────────────────────────────────────────────
 # RUNNER DE BATCHES
@@ -1221,7 +1266,7 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
                 if last:
                     s = score_combos_advanced(combos_t, as_data, last, n_max)
                     as_scores *= np.power(s, 1 / len(as_data_all))
-            df_top["global_composite"] = df_top["global_composite"] * as_scores
+            df_top["global_composite"] = df_top["global_composite"] * ((1-W_ADVANCED) + W_ADVANCED * as_scores)
             df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
             logger.info("Score avanzado aplicado al top final")
         except Exception as e:
@@ -1236,7 +1281,7 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
                 bolsa_d = sb_data.get("bolsa", {})
                 s = score_social_bias_batch(combos_t, bolsa_d, n_max)
                 sb_scores *= np.power(s, 1/len(sb_data_all))
-            df_top["global_composite"] = df_top["global_composite"] * sb_scores
+            df_top["global_composite"] = df_top["global_composite"] * ((1-W_SOCIAL) + W_SOCIAL * sb_scores)
             df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
             logger.info("Score de sesgo social aplicado")
         except Exception as e:
@@ -1250,7 +1295,7 @@ def run_model(histories_override: Optional[Dict[str, pd.DataFrame]] = None,
             for name, it_data in it_data_all.items():
                 s = score_it_batch(combos_t, it_data, n_max)
                 it_scores *= np.power(s, 1/len(it_data_all))
-            df_top["global_composite"] = df_top["global_composite"] * it_scores
+            df_top["global_composite"] = df_top["global_composite"] * ((1-W_IT) + W_IT * it_scores)
             df_top = df_top.sort_values("global_composite", ascending=False).reset_index(drop=True)
             logger.info("Score IT aplicado")
         except Exception as e:
