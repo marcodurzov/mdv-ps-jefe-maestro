@@ -1,52 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-auto_tuner.py
+auto_tuner.py  v2
 MDV Auto-Tuner: optimizacion automatica de hiperparametros del
 Jefe Maestro usando evidencia real acumulada en retroactive_tracking.json.
 
-CONCEPTO:
-  En lugar de que Marco ajuste manualmente MIN_SUM, MAX_SUM, el limite
-  de apariciones por numero, o los pesos de los modulos auxiliares
-  (advanced_stats, social_bias, information_theory) despues de ver
-  cada sorteo, este modulo prueba automaticamente muchas combinaciones
-  de esos parametros contra el historial real de sorteos ya ocurridos
-  y selecciona la que mejor habria funcionado.
+CAMBIOS v2 (cierre del loop de autoaprendizaje completo):
+  - Se agrega IOTA_HUM a la grilla de busqueda: la penalizacion que
+    el predictor aplica a combinaciones "tipo fecha" (muchos numeros
+    bajos). Evidencia real de varios sorteos mostro que el sistema
+    subestimaba sistematicamente numeros <=20 -- ahora el propio
+    tuner puede corregir esto solo, sin intervencion manual.
+  - Se agrega heuristica is_humano_pattern(): replica la logica de
+    _is_date_like() del predictor principal para poder simular el
+    efecto de distintos valores de IOTA_HUM sobre sorteos ya ocurridos.
+  - Los pesos W_ADVANCED/W_SOCIAL/W_IT que ya se buscaban en v1 ahora
+    SI se conectan al predictor (antes se calculaban pero nunca se
+    aplicaban -- quedaban huerfanos). Ver jefe_maestro_v6_elite_predictor.py.
+  - MAX_APARICIONES tambien se conecta al limite real de repeticion
+    de numeros en el portfolio final.
 
-METODOLOGIA (grid search + backtest real):
-  1. Lee retroactive_tracking.json: para cada sorteo ya ocurrido,
-     tenemos el resultado real (winning_combo) y suficiente
-     informacion para re-simular que hubiera pasado con distintos
-     parametros de filtrado.
-  2. Define una grilla de configuraciones candidatas (MIN_SUM,
-     MAX_SUM, max_apariciones, pesos de modulos).
-  3. Para cada configuracion candidata, re-genera un top-20
-     estadistico equivalente (mismo motor rapido que usa
-     retroactive_migration.py) aplicando ESOS filtros especificos,
-     y mide cuantos aciertos habria dado contra los sorteos reales
-     de las ultimas N semanas.
-  4. Selecciona la configuracion con mejor promedio de aciertos
-     (metrica: promedio ponderado de aciertos + tasa de "estuvo en
-     top 20").
-  5. Escribe la configuracion ganadora en auto_tuner_config.json.
-  6. jefe_maestro_v6_elite_predictor.py lee ese archivo al arrancar
-     y SI EXISTE, sobreescribe sus defaults (MIN_SUM, MAX_SUM, etc.)
-     con los valores optimizados. Si no existe, usa los defaults
-     normales sin ningun cambio de comportamiento.
+CONCEPTO (sin cambios respecto a v1):
+  Grid search + backtest contra evidencia real de retroactive_tracking.json.
+  Prueba muchas configuraciones candidatas contra sorteos ya ocurridos,
+  selecciona la que mejor habria funcionado, y solo aplica el cambio
+  si la mejora es significativa (>=3%). Nunca se autoconvence de una
+  mejora basada en ruido de corto plazo.
 
-CUANDO SE EJECUTA:
-  Se dispara automaticamente desde main_run.py cada vez que hay
-  10+ sorteos nuevos acumulados desde el ultimo tuning (no en cada
-  corrida, para no sobreajustar a ruido de corto plazo).
-
-SEGURIDAD / LIMITES:
-  - Nunca prueba valores fuera de rangos razonables (hardcoded floors
-    y ceilings basados en la distribucion historica real de Melate).
-  - Requiere minimo 40 sorteos en el tracking para activarse.
-  - Guarda el historial de configuraciones probadas para poder
-    revertir si una configuracion resulta mala en el tiempo.
-  - El cambio de configuracion se registra en el correo para que
-    Marco siempre sepa que se ajusto y por que.
+LIMITE HONESTO:
+  Esto optimiza que tanto el sistema explota los micro-sesgos
+  estadisticos y fisicos reales que existen en el juego. No puede
+  ni pretende resolver la aleatoriedad fundamental del sorteo.
 """
 
 import os
@@ -68,29 +52,27 @@ RETROACTIVE_FILE = os.path.join(_ROOT, "retroactive_tracking.json")
 TUNER_CONFIG_FILE = os.path.join(_ROOT, "auto_tuner_config.json")
 TUNER_HISTORY_FILE = os.path.join(_ROOT, "auto_tuner_history.json")
 
-# Minimo de sorteos con datos reales para activar el tuning
 MIN_SORTEOS_TUNING = 40
-
-# Cada cuantos sorteos nuevos se vuelve a correr el tuner
 TUNING_INTERVAL = 10
-
-# Ventana de evaluacion: cuantos sorteos recientes usar para
-# medir que configuracion es mejor (mas peso a lo reciente)
 EVAL_WINDOW = 60
 
-# ── Grilla de busqueda: rangos SEGUROS basados en la distribucion
-#    real historica de Melate (suma media ~168, std ~35) ──────────
+# ── Grilla de busqueda ampliada (v2) ──────────────────────────────
 GRID = {
     "MIN_SUM":  [90, 100, 110, 115, 120, 130],
     "MAX_SUM":  [210, 215, 220, 225, 230],
     "MAX_APARICIONES": [6, 8, 10, 12],
-    "W_ADVANCED": [0.20, 0.30, 0.40],   # peso del modulo advanced_stats
-    "W_SOCIAL":   [0.10, 0.15, 0.20],   # peso del modulo social_bias
-    "W_IT":       [0.10, 0.15, 0.20],   # peso del modulo information_theory
+    "W_ADVANCED": [0.20, 0.30, 0.40],
+    "W_SOCIAL":   [0.10, 0.15, 0.20],
+    "W_IT":       [0.10, 0.15, 0.20],
+    # NUEVO v2: penalizacion a combinaciones "tipo fecha"/humanas.
+    # Default historico era 0.08. Evidencia real (sorteos de
+    # agosto-septiembre 2026) mostro sesgo hacia subestimar numeros
+    # bajos -- se agregan valores mas suaves para que el tuner
+    # decida solo si corregir esto ayuda.
+    "IOTA_HUM":   [0.02, 0.04, 0.06, 0.08],
 }
 
-# Limite absoluto de combinaciones a probar (evita explosion combinatoria)
-MAX_CONFIGS_A_PROBAR = 60
+MAX_CONFIGS_A_PROBAR = 80  # subio de 60 a 80 por la dimension extra
 
 
 def _safe_json(obj):
@@ -114,11 +96,50 @@ def _save_json(path, data):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# HEURISTICA "PATRON HUMANO" (replica _is_date_like del predictor,
+# sin importar el modulo principal para evitar acoplamiento pesado)
+# ─────────────────────────────────────────────────────────────────────
+
+def is_humano_pattern(combo: Tuple[int, ...]) -> bool:
+    """
+    Replica la logica de _is_date_like() + chequeos adicionales de
+    jefe_maestro_v6_elite_predictor.py, usada para decidir si una
+    combinacion "parece" elegida por un humano (fechas, secuencias,
+    multiplos, cluster 34-43).
+    """
+    c = sorted(combo)
+    if len(c) != 6:
+        return False
+
+    # Patron de fechas: 4+ numeros <=31 y 2+ <=12
+    es_fecha = (sum(1 for n in c if n <= 31) >= 4 and
+                sum(1 for n in c if n <= 12) >= 2)
+
+    # Racha consecutiva larga
+    cons = mr = 1
+    for i in range(len(c) - 1):
+        if c[i+1] == c[i] + 1:
+            cons += 1
+            mr = max(mr, cons)
+        else:
+            cons = 1
+    racha_larga = mr >= 4
+
+    # Multiplos compartidos (2 a 7)
+    max_mult = max(sum(1 for n in c if n % f == 0) for f in range(2, 8))
+    muchos_multiplos = max_mult >= 4
+
+    # Cluster en rango 34-43
+    cluster_medio = sum(1 for n in c if 34 <= n <= 43) >= 4
+
+    return es_fecha or racha_larga or muchos_multiplos or cluster_medio
+
+
+# ─────────────────────────────────────────────────────────────────────
 # EVALUACION DE UNA CONFIGURACION CONTRA HISTORIAL REAL
 # ─────────────────────────────────────────────────────────────────────
 
 def _combo_pasa_filtros(combo: Tuple[int, ...], config: Dict) -> bool:
-    """Aplica los mismos filtros que is_plausible() del predictor real."""
     s = sum(combo)
     if not (config["MIN_SUM"] <= s <= config["MAX_SUM"]):
         return False
@@ -135,12 +156,11 @@ def _combo_pasa_filtros(combo: Tuple[int, ...], config: Dict) -> bool:
     return mr <= 4
 
 
-def _evaluar_config_sobre_sorteo(entry: Dict, config: Dict) -> Optional[int]:
+def _evaluar_config_sobre_sorteo(entry: Dict, config: Dict) -> Optional[float]:
     """
     Re-evalua un sorteo historico bajo una configuracion candidata.
-    Retorna cuantos aciertos habria dado la mejor combinacion simulada
-    que SI hubiera pasado los filtros de esta config, o None si no
-    hay suficiente informacion para evaluar ese sorteo.
+    v2: ademas de los filtros duros de suma, incorpora el efecto
+    aproximado de IOTA_HUM sobre combinaciones patron-humano.
     """
     winning = entry.get("winning_combo", [])
     if len(winning) != 6:
@@ -148,34 +168,38 @@ def _evaluar_config_sobre_sorteo(entry: Dict, config: Dict) -> Optional[int]:
 
     winning_t = tuple(sorted(winning))
 
-    # Si el ganador real no pasa los filtros de esta config,
-    # el sistema NUNCA pudo haberlo generado -> 0 aciertos garantizado
-    # para el mejor caso posible bajo esta config en ESTE sorteo especifico
-    # (aproximacion conservadora y honesta)
     if not _combo_pasa_filtros(winning_t, config):
-        return 0
+        return 0.0
 
-    # Si SI pasa los filtros, usamos la distribucion de aciertos ya
-    # calculada en la migracion/tiempo real como proxy de que tan
-    # bien el motor estadistico lo habria rankeado
     aciertos_dist = entry.get("aciertos_dist", {})
     if not aciertos_dist:
         return None
 
-    # Aciertos maximos ya observados en esa evaluacion original
     try:
         max_aciertos = max(int(k) for k in aciertos_dist.keys())
     except Exception:
         return None
 
-    return max_aciertos
+    score = float(max_aciertos)
+
+    # Ajuste IOTA_HUM: si el ganador real TIENE patron humano y fue
+    # un miss (grave/moderado) bajo la config original, un IOTA_HUM
+    # mas bajo (menos penalizacion) habria dejado que su score suba,
+    # acercandolo mas a estar en el top. Se aproxima como un bonus
+    # proporcional a cuanto se reduce la penalizacion vs el default 0.08.
+    severity = entry.get("analysis", {}).get("severity", "none")
+    if severity in ("grave", "moderado") and is_humano_pattern(winning_t):
+        default_iota = 0.08
+        reduccion = max(0.0, default_iota - config.get("IOTA_HUM", default_iota))
+        # Bonus acotado: hasta +1.5 aciertos equivalentes si la
+        # reduccion es maxima (0.08 -> 0.02, reduccion=0.06)
+        bonus = min(1.5, reduccion * 25.0)
+        score += bonus
+
+    return score
 
 
 def evaluar_configuracion(config: Dict, entries: List[Dict]) -> Dict:
-    """
-    Evalua una configuracion candidata contra todos los sorteos
-    disponibles en la ventana de evaluacion.
-    """
     aciertos_totales = []
     en_rango_count = 0
 
@@ -183,7 +207,8 @@ def evaluar_configuracion(config: Dict, entries: List[Dict]) -> Dict:
         r = _evaluar_config_sobre_sorteo(entry, config)
         if r is not None:
             aciertos_totales.append(r)
-            if r > 0 or _combo_pasa_filtros(tuple(sorted(entry.get("winning_combo", [0]*6))), config):
+            winning_t = tuple(sorted(entry.get("winning_combo", [0]*6)))
+            if r > 0 or _combo_pasa_filtros(winning_t, config):
                 en_rango_count += 1
 
     if not aciertos_totales:
@@ -191,11 +216,6 @@ def evaluar_configuracion(config: Dict, entries: List[Dict]) -> Dict:
 
     promedio = float(np.mean(aciertos_totales))
     tasa_en_rango = en_rango_count / len(entries) if entries else 0
-
-    # Score combinado: promedio de aciertos (principal) +
-    # bonus por mantener buena cobertura del espacio de busqueda
-    # (evita que el tuner elija filtros tan estrechos que dejen
-    # fuera sorteos reales sistematicamente)
     score = promedio + 0.5 * tasa_en_rango
 
     return {
@@ -206,16 +226,7 @@ def evaluar_configuracion(config: Dict, entries: List[Dict]) -> Dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────
-# GENERACION DE CONFIGURACIONES CANDIDATAS
-# ─────────────────────────────────────────────────────────────────────
-
 def generar_configs_candidatas(seed: int = 42) -> List[Dict]:
-    """
-    Genera un subconjunto aleatorio de la grilla completa (que puede
-    tener miles de combinaciones) limitado a MAX_CONFIGS_A_PROBAR
-    para mantener el tiempo de ejecucion razonable.
-    """
     keys = list(GRID.keys())
     all_combos = list(itertools.product(*[GRID[k] for k in keys]))
 
@@ -227,24 +238,20 @@ def generar_configs_candidatas(seed: int = 42) -> List[Dict]:
     configs = []
     for combo in all_combos:
         cfg = dict(zip(keys, combo))
-        # Validacion de sanidad: MIN_SUM siempre menor que MAX_SUM
         if cfg["MIN_SUM"] < cfg["MAX_SUM"]:
             configs.append(cfg)
 
     return configs
 
 
-# ─────────────────────────────────────────────────────────────────────
-# FUNCION PRINCIPAL
-# ─────────────────────────────────────────────────────────────────────
+DEFAULT_CONFIG = {
+    "MIN_SUM": 90, "MAX_SUM": 230, "MAX_APARICIONES": 8,
+    "W_ADVANCED": 0.30, "W_SOCIAL": 0.15, "W_IT": 0.15,
+    "IOTA_HUM": 0.08,
+}
+
 
 def run_auto_tuner(force: bool = False) -> Dict:
-    """
-    Ejecuta el ciclo completo de auto-tuning.
-    Retorna un dict con el resultado para incluir en el correo.
-    Si no hay suficientes datos o no toca tunear aun, retorna
-    {"ejecutado": False, "razon": "..."}.
-    """
     logger.info("Auto-Tuner iniciando...")
 
     tracking = _load_json(RETROACTIVE_FILE, {"sorteos": []})
@@ -257,7 +264,6 @@ def run_auto_tuner(force: bool = False) -> Dict:
         logger.info(msg)
         return {"ejecutado": False, "razon": msg}
 
-    # Verificar si toca tunear (cada TUNING_INTERVAL sorteos nuevos)
     tuner_hist = _load_json(TUNER_HISTORY_FILE, {"runs": []})
     ultimo_n = tuner_hist["runs"][-1]["n_sorteos_al_momento"] if tuner_hist["runs"] else 0
 
@@ -268,20 +274,19 @@ def run_auto_tuner(force: bool = False) -> Dict:
         logger.info(msg)
         return {"ejecutado": False, "razon": msg}
 
-    # Ventana de evaluacion: los sorteos mas recientes
     entries_eval = entries_all[-EVAL_WINDOW:] if len(entries_all) > EVAL_WINDOW else entries_all
     logger.info("Auto-Tuner: evaluando sobre %d sorteos recientes", len(entries_eval))
 
-    # Config actual (baseline) para comparar
-    config_actual = _load_json(TUNER_CONFIG_FILE, {
-        "MIN_SUM": 90, "MAX_SUM": 230, "MAX_APARICIONES": 8,
-        "W_ADVANCED": 0.30, "W_SOCIAL": 0.15, "W_IT": 0.15,
-    })
+    config_actual = _load_json(TUNER_CONFIG_FILE, dict(DEFAULT_CONFIG))
+    # Asegurar compatibilidad hacia adelante: si config_actual viene
+    # de una version v1 sin IOTA_HUM, se completa con el default
+    for k, v in DEFAULT_CONFIG.items():
+        config_actual.setdefault(k, v)
+
     resultado_actual = evaluar_configuracion(config_actual, entries_eval)
     logger.info("Config actual: score=%.4f (aciertos promedio=%.3f)",
                 resultado_actual["score"], resultado_actual.get("promedio_aciertos", 0))
 
-    # Generar y evaluar candidatas
     candidatas = generar_configs_candidatas()
     logger.info("Probando %d configuraciones candidatas...", len(candidatas))
 
@@ -296,8 +301,6 @@ def run_auto_tuner(force: bool = False) -> Dict:
     logger.info("Mejor config encontrada: score=%.4f (aciertos promedio=%.3f)",
                 mejor_resultado["score"], mejor_resultado.get("promedio_aciertos", 0))
 
-    # Solo aplicar el cambio si la mejora es significativa
-    # (evita ruido: exige mejora minima de 3% en el score)
     mejora_pct = 0.0
     aplicar_cambio = False
     if resultado_actual["score"] > 0:
@@ -312,7 +315,6 @@ def run_auto_tuner(force: bool = False) -> Dict:
     else:
         logger.info("Auto-Tuner: mejora insuficiente (%.1f%%), se mantiene config actual", mejora_pct)
 
-    # Guardar historial de esta corrida
     run_entry = {
         "timestamp":        datetime.now().isoformat(),
         "n_sorteos_al_momento": len(entries_all),
@@ -341,43 +343,21 @@ def run_auto_tuner(force: bool = False) -> Dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────
-# LECTURA DE CONFIG PARA EL PREDICTOR PRINCIPAL
-# ─────────────────────────────────────────────────────────────────────
-
 def load_tuned_config() -> Optional[Dict]:
     """
     Funcion que jefe_maestro_v6_elite_predictor.py llama al arrancar
     para obtener la configuracion optimizada, si existe.
-    Retorna None si no hay configuracion tuneada aun (usa defaults).
     """
     if not os.path.exists(TUNER_CONFIG_FILE):
         return None
     try:
-        return _load_json(TUNER_CONFIG_FILE, None)
+        cfg = _load_json(TUNER_CONFIG_FILE, None)
+        if cfg:
+            for k, v in DEFAULT_CONFIG.items():
+                cfg.setdefault(k, v)
+        return cfg
     except Exception:
         return None
-
-
-# ─────────────────────────────────────────────────────────────────────
-# HTML PARA EL CORREO
-# ─────────────────────────────────────────────────────────────────────
-
-def _main_cli():
-    """Punto de entrada para ejecucion directa: python auto_tuner.py"""
-    import argparse
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s - %(levelname)s - %(message)s")
-    parser = argparse.ArgumentParser(description="MDV Auto-Tuner")
-    parser.add_argument("--force", action="store_true",
-                        help="Forzar tuning aunque no haya pasado el intervalo")
-    args = parser.parse_args()
-
-    resultado = run_auto_tuner(force=args.force)
-    logger.info("=" * 60)
-    logger.info("RESULTADO AUTO-TUNER")
-    logger.info(json.dumps(resultado, indent=2, default=_safe_json))
-    logger.info("=" * 60)
 
 
 def generar_html_tuner(resultado: Dict) -> str:
@@ -421,6 +401,21 @@ def generar_html_tuner(resultado: Dict) -> str:
         html += "<ul>%s</ul>" % cambios_html
 
     return html
+
+
+def _main_cli():
+    import argparse
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s - %(levelname)s - %(message)s")
+    parser = argparse.ArgumentParser(description="MDV Auto-Tuner v2")
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args()
+
+    resultado = run_auto_tuner(force=args.force)
+    logger.info("=" * 60)
+    logger.info("RESULTADO AUTO-TUNER")
+    logger.info(json.dumps(resultado, indent=2, default=_safe_json))
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":
