@@ -997,8 +997,36 @@ def build_portfolio(df_top: pd.DataFrame, top_k: int,
             final_idx.append(i)
             for n in combo:
                 num_count[n] = num_count.get(n, 0) + 1
-    if len(final_idx) >= top_k // 2:
+    # FIX: el umbral anterior (top_k // 2 = 10) permitia que el
+    # portfolio final quedara incompleto (ej. 15 de 20 combos) sin
+    # ninguna advertencia. Se sube el piso de seguridad al 90% del
+    # top_k pedido. Si el filtro es tan agresivo que ni eso logra,
+    # se relaja el limite al doble antes de rendirse, para nunca
+    # entregar un portfolio visiblemente incompleto.
+    umbral_minimo = max(1, int(top_k * 0.9))
+    if len(final_idx) >= umbral_minimo:
         return result.iloc[final_idx].reset_index(drop=True)
+
+    # Segundo intento con el limite relajado al doble
+    num_count2: Dict[int, int] = {}
+    final_idx2 = []
+    limite_relajado = MAX_APARICIONES * 2
+    for i, (_, row) in enumerate(result.iterrows()):
+        combo = row["combo"]
+        if all(num_count2.get(n, 0) < limite_relajado for n in combo):
+            final_idx2.append(i)
+            for n in combo:
+                num_count2[n] = num_count2.get(n, 0) + 1
+        if len(final_idx2) >= top_k:
+            break
+    if len(final_idx2) >= umbral_minimo:
+        logger.warning(
+            "Portfolio: MAX_APARICIONES=%d demasiado estricto, "
+            "se relajo a %d para completar el top %d",
+            MAX_APARICIONES, limite_relajado, top_k
+        )
+        return result.iloc[final_idx2].reset_index(drop=True)
+
     return result
 
 # ─────────────────────────────────────────────────────────────────────
