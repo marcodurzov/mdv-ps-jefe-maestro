@@ -267,9 +267,24 @@ def run_auto_tuner(force: bool = False) -> Dict:
     tuner_hist = _load_json(TUNER_HISTORY_FILE, {"runs": []})
     ultimo_n = tuner_hist["runs"][-1]["n_sorteos_al_momento"] if tuner_hist["runs"] else 0
 
-    if not force and (len(entries_all) - ultimo_n) < TUNING_INTERVAL:
+    # FIX: retroactive_tracking.json se recorta a un maximo de 100
+    # entradas en cada corrida del Retroactive Learner. Eso hace que
+    # len(entries_all) pueda ser MENOR que ultimo_n (guardado cuando
+    # el archivo tenia mas entradas, ej. justo despues de la migracion
+    # inicial de 450). Sin este fix, la resta da negativo y el tuner
+    # queda atascado para siempre pensando que nunca hay sorteos nuevos.
+    diff_sorteos = len(entries_all) - ultimo_n
+    if diff_sorteos < 0:
+        logger.warning(
+            "Auto-Tuner: el tracking se recorto (antes %d, ahora %d). "
+            "Se fuerza el tuning para no quedar atascado.",
+            ultimo_n, len(entries_all)
+        )
+        diff_sorteos = TUNING_INTERVAL  # forzar que se considere "toca tunear"
+
+    if not force and diff_sorteos < TUNING_INTERVAL:
         msg = "Auto-Tuner: solo %d sorteos nuevos desde el ultimo tuning (necesita %d)." % (
-            len(entries_all) - ultimo_n, TUNING_INTERVAL
+            diff_sorteos, TUNING_INTERVAL
         )
         logger.info(msg)
         return {"ejecutado": False, "razon": msg}
