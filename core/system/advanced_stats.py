@@ -209,16 +209,35 @@ def _build_bias(combos: List[List[int]],
                 streak_cur[num] += 1
                 streak_max[num] = max(streak_max[num], streak_cur[num])
 
-    p_absent    = 1 - k / n_max
-    exp_streak  = 1 / (1 - p_absent + 1e-9)
+    # FIX: la formula anterior (1/(1-p_absent)) es la media de UN
+    # solo intento geometrico, no el maximo esperado de una racha
+    # sobre miles de sorteos. Subestimaba ~5x (9 en vez de ~47 para
+    # 1889 sorteos), causando que CUALQUIER numero disparara el
+    # semaforo rojo aun sin sesgo real (falso positivo masivo,
+    # confirmado con simulacion Monte Carlo). Formula correcta:
+    # teoria de valores extremos para el maximo de una racha de
+    # "exitos" (ausencias) en n ensayos Bernoulli.
+    p_absent = 1 - k / n_max
+    if n_sorteos > 10 and 0 < p_absent < 1:
+        exp_streak = np.log(n_sorteos * (1 - p_absent)) / np.log(1 / p_absent + 1e-9)
+        exp_streak = max(exp_streak, 1.0)
+    else:
+        exp_streak = 1 / (1 - p_absent + 1e-9)
+
+    # FIX: correccion de Bonferroni. Se prueban n_max=56 numeros
+    # simultaneamente; sin corregir el umbral, ~0.5-2.8 numeros salen
+    # "rojo/amarillo" por puro azar en cada corrida aunque no exista
+    # ningun sesgo real (problema de comparaciones multiples).
+    alpha_rojo_corregido     = 0.01 / n_max
+    alpha_amarillo_corregido = 0.05 / n_max
 
     semaforo = {}
     for num in range(1, n_max+1):
         b      = bias_per_num[num]
         streak = streak_max[num]
-        if b["p"] < 0.01 or streak > exp_streak * 3:
+        if b["p"] < alpha_rojo_corregido or streak > exp_streak * 3:
             semaforo[num] = "rojo"
-        elif b["p"] < 0.05 or streak > exp_streak * 2:
+        elif b["p"] < alpha_amarillo_corregido or streak > exp_streak * 2:
             semaforo[num] = "amarillo"
         else:
             semaforo[num] = "verde"
