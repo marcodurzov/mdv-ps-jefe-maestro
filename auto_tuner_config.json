@@ -1,0 +1,9 @@
+{
+  "MIN_SUM": 90,
+  "MAX_SUM": 230,
+  "MAX_APARICIONES": 10,
+  "W_ADVANCED": 0.3,
+  "W_SOCIAL": 0.15,
+  "W_IT": 0.15,
+  "IOTA_HUM": 0.02
+}
