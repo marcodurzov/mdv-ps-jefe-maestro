@@ -216,12 +216,24 @@ def evaluar_configuracion(config: Dict, entries: List[Dict]) -> Dict:
 
     promedio = float(np.mean(aciertos_totales))
     tasa_en_rango = en_rango_count / len(entries) if entries else 0
-    score = promedio + 0.5 * tasa_en_rango
+
+    # FIX: bonus de cobertura. El tuner optimizaba solo "aciertos
+    # promedio", sin penalizar configuraciones que reducen la
+    # diversidad del portfolio (ej. MAX_APARICIONES alto permite que
+    # pocos numeros dominen el top 20, bajando la cobertura del
+    # espacio 1-56). Se agrega un bonus proporcional a que tan
+    # RESTRICTIVO es MAX_APARICIONES: valores bajos (mas diversidad
+    # forzada) reciben mas bonus. Rango de la grilla: 6-12.
+    max_ap = config.get("MAX_APARICIONES", 8)
+    cobertura_bonus = (14 - max_ap) * 0.02  # 6->0.16 ... 12->0.04
+
+    score = promedio + 0.5 * tasa_en_rango + cobertura_bonus
 
     return {
         "score":          round(score, 4),
         "promedio_aciertos": round(promedio, 4),
         "tasa_en_rango":  round(tasa_en_rango, 4),
+        "cobertura_bonus": round(cobertura_bonus, 4),
         "n_evaluados":    len(aciertos_totales),
     }
 
