@@ -134,142 +134,52 @@ def _get_previous_predictions(fecha_resultado: str) -> Optional[List[Dict]]:
 def _score_combo_with_model(combo: tuple, name: str,
                              stats: Dict, n_max: int = 56) -> Dict:
     """
-    Calcula el score ML de una combinacion usando el modelo en cache.
-    No importa del predictor principal para evitar circularidad.
+    Calcula un score heuristico (NO es el score del ensemble ML real)
+    de una combinacion, basado en hot30/gap ya calculados por el
+    predictor principal.
+
+    FIX: la version anterior intentaba aproximar el score del
+    ensemble ML real construyendo un vector de ~18 features y
+    rellenando con ceros hasta las ~70 dimensiones que el scaler
+    entrenado espera. Esto produce un vector completamente fuera
+    de la distribucion de entrenamiento, y los modelos (arboles de
+    decision calibrados) extrapolan de forma degenerada -- en
+    produccion esto se observo como un score identico (0.0000)
+    para tres loterias con modelos independientes en la misma
+    corrida, lo cual es matematicamente casi imposible si el calculo
+    fuera real. Confirmado tambien con simulacion controlada: el
+    resultado del zero-padding no guarda relacion estable con las
+    features reales de la combinacion.
+
+    En vez de fingir precision de ML que no existe, este score usa
+    directamente hot30 (frecuencia reciente) y gap (sorteos desde
+    la ultima aparicion) de cada numero -- la misma señal base que
+    ya usa el pipeline real, sin la capa de aproximacion rota.
+    No importa el modelo desde cache: es mas rapido y mas honesto.
     """
-    mf = MODEL_FILE_TPL.format(name=name)
-    if not os.path.exists(mf):
-        logger.debug("[RL:%s] Modelo no en cache, usando stats simples", name)
-        # Fallback: score basado en stats sin ML
-        h30  = stats.get("hot30", {})
-        hot  = [float(h30.get(str(n), 0.)) for n in combo]
-        gap  = stats.get("gap", {})
-        gaps = [float(gap.get(str(n), 1.)) for n in combo]
-        return {
-            "combo":    list(combo),
-            "suma":     int(sum(combo)),
-            "ml_score": 0.0,
-            "hot_mean": round(float(np.mean(hot)), 4),
-            "gap_mean": round(float(np.mean(gaps)), 4),
-            "n_low":    int(sum(1 for n in combo if n <= 20)),
-            "n_high":   int(sum(1 for n in combo if n >= 40)),
-            "n_mid":    int(sum(1 for n in combo if 20 < n < 40)),
-            "method":   "stats_only",
-        }
+    nums = sorted(combo)
+    h30  = stats.get("hot30", {})
+    hot  = [float(h30.get(str(n), 0.)) for n in nums]
+    gap  = stats.get("gap", {})
+    gaps = [float(gap.get(str(n), 1.)) for n in nums]
 
-    try:
-        cached = joblib.load(mf)
-        scaler = cached.get("scaler")
-        models = cached.get("models", {})
+    # Score heuristico: combina frecuencia reciente alta con gap bajo
+    # (numeros calientes y recientes). Rango aproximado 0-1.
+    hot_mean = float(np.mean(hot))
+    gap_mean = float(np.mean(gaps))
+    score = float(np.clip(hot_mean * 5.0 - gap_mean * 0.05, 0.0, 1.0))
 
-        # Construir features manualmente sin importar del predictor
-        # Features basicas que no requieren importacion circular
-        nums     = sorted(combo)
-        k        = len(nums)
-        s        = float(sum(nums))
-        ev       = float(sum(1 for n in nums if n % 2 == 0))
-        rng      = float(max(nums) - min(nums))
-        std      = float(np.std(nums))
-        dif      = np.diff(nums)
-        md       = float(dif.min()) if dif.size else 0.
-        xd       = float(dif.max()) if dif.size else 0.
-
-        # Hot scores
-        h30  = stats.get("hot30", {})
-        h10  = stats.get("hot10", {})
-        hot30 = sum(float(h30.get(str(n), 0.)) for n in nums)
-        hot10 = sum(float(h10.get(str(n), 0.)) for n in nums)
-
-        # Gap
-        gap_d = stats.get("gap", {})
-        gaps  = [float(gap_d.get(str(n), 1.)) for n in nums]
-        gap_m = float(np.mean(gaps))
-
-        # KS
-        ksd   = stats.get("ks", {})
-        ks_v  = [float(ksd.get(str(n), 0.)) for n in nums]
-        ks_m  = float(np.mean(ks_v))
-
-        # Co-ocurrencia
-        cooc  = stats.get("cooc", {})
-        pairs = [float(cooc.get("%d_%d" % (min(a,b), max(a,b)), 1.))
-                 for i,a in enumerate(nums) for b in nums[i+1:]]
-        cooc_m = float(np.mean(pairs)) if pairs else 1.0
-
-        # Balance parity
-        mn_s = sum(range(1, k+1))
-        mx_s = sum(range(n_max-k+1, n_max+1))
-        ps   = 1. - abs(ev - k/2.) / (k/2. + 1e-9)
-        sb   = 1. - abs(s - (mn_s+mx_s)/2.) / ((mx_s-mn_s) or 1.)
-
-        # Features vector (simplificado vs el completo de 70 dims)
-        feats = [s, ev, rng, std, md, xd,
-                 hot30, hot10, gap_m, ks_m, cooc_m, ps, sb,
-                 float(sum(1 for n in nums if n <= 20)),  # n_low
-                 float(sum(1 for n in nums if n >= 40)),  # n_high
-                 float(k - sum(1 for n in nums if n<=20 or n>=40)),
-                 float(sum(1 for i in range(k-1) if nums[i+1]==nums[i]+1)),
-                 float(np.var(dif)) if dif.size else 0.]
-
-        # Pad/truncate a lo que el scaler espera
-        X = np.array([feats], dtype=np.float32)
-
-        # Intentar con el scaler (puede fallar si dims no coinciden)
-        score = 0.0
-        try:
-            if scaler is not None:
-                # Ajustar dims
-                expected = scaler.n_features_in_
-                if X.shape[1] < expected:
-                    X = np.pad(X, ((0,0),(0, expected - X.shape[1])))
-                elif X.shape[1] > expected:
-                    X = X[:, :expected]
-                Xs = scaler.transform(X)
-            else:
-                Xs = X
-
-            # Score del meta o del mejor modelo disponible
-            meta = models.get("meta")
-            mc   = models.get("meta_cols", [])
-            if meta and len(mc) >= 2:
-                try:
-                    cp = [models[bn].predict_proba(Xs)[0,1]
-                          for bn in mc if models.get(bn)]
-                    if len(cp) == len(mc):
-                        Z = np.array([cp])
-                        score = float(meta.predict_proba(Z)[0,1])
-                except Exception:
-                    pass
-
-            if score == 0.0:
-                for mname, w in [("xgb",0.35),("lgbm",0.20)]:
-                    m = models.get(mname)
-                    if m:
-                        try:
-                            score = max(score, float(m.predict_proba(Xs)[0,1]))
-                        except Exception:
-                            pass
-
-        except Exception as e:
-            logger.debug("Score ML fallo, usando 0: %s", e)
-            score = 0.0
-
-        return {
-            "combo":    list(combo),
-            "suma":     int(sum(combo)),
-            "ml_score": round(score, 5),
-            "hot_mean": round(float(np.mean([float(h30.get(str(n),0.)) for n in nums])), 4),
-            "gap_mean": round(gap_m, 4),
-            "n_low":    int(sum(1 for n in nums if n <= 20)),
-            "n_high":   int(sum(1 for n in nums if n >= 40)),
-            "n_mid":    int(sum(1 for n in nums if 20 < n < 40)),
-            "method":   "ml",
-        }
-
-    except Exception as e:
-        logger.warning("[RL] Score fallo: %s", e)
-        return {"combo": list(combo), "suma": int(sum(combo)),
-                "ml_score": 0.0, "error": str(e)}
+    return {
+        "combo":    list(combo),
+        "suma":     int(sum(combo)),
+        "ml_score": round(score, 5),
+        "hot_mean": round(hot_mean, 4),
+        "gap_mean": round(gap_mean, 4),
+        "n_low":    int(sum(1 for n in nums if n <= 20)),
+        "n_high":   int(sum(1 for n in nums if n >= 40)),
+        "n_mid":    int(sum(1 for n in nums if 20 < n < 40)),
+        "method":   "heuristico",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -572,7 +482,7 @@ def generar_html_retroactivo(reporte: Dict) -> str:
             "border-radius:4px;padding:10px;margin-bottom:10px'>"
             "<b style='color:%s'>%s</b><br>"
             "<b>Ganador real:</b> <span style='letter-spacing:2px'>"
-            "<b>%s</b></span> (suma: %d | score ML: %.4f)<br>"
+            "<b>%s</b></span> (suma: %d | score heuristico: %.4f)<br>"
             "<span style='color:%s'><b>%s</b></span><br><br>"
             "<b style='font-size:11px'>Por que no quedo en top 5:</b>"
             "<ul>%s</ul>"
