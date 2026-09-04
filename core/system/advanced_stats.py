@@ -618,8 +618,25 @@ def generar_html_reporte(as_data_all: Dict[str, Dict]) -> str:
                          (breaks.get('break_point_sorteo','?'),
                           breaks.get('desviacion_pct','?')))
 
-        rojos_str    = " ".join(str(n) for n in rojos[:10])    if rojos    else "Ninguno"
-        amarillos_str = " ".join(str(n) for n in amarillos[:10]) if amarillos else "Ninguno"
+        # FIX: antes se truncaba silenciosamente a los primeros 10
+        # numeros en orden ascendente. Si habia mas de 10 (ej. un
+        # sesgo real que abarca 12 numeros consecutivos altos), el
+        # correo mostraba solo los primeros 10 sin avisar, dando la
+        # falsa impresion de un patron "sospechosamente redondo" en
+        # vez de mostrar el hallazgo completo. Ahora se muestra el
+        # conteo total y se indica explicitamente cuantos quedan
+        # ocultos, para nunca esconder informacion real sin decirlo.
+        def _fmt_lista(lst, max_mostrar=15):
+            if not lst:
+                return "Ninguno"
+            mostrados = " ".join(str(n) for n in lst[:max_mostrar])
+            restantes = len(lst) - max_mostrar
+            if restantes > 0:
+                return "%s (+%d mas, %d en total)" % (mostrados, restantes, len(lst))
+            return mostrados
+
+        rojos_str     = _fmt_lista(rojos)
+        amarillos_str = _fmt_lista(amarillos)
 
         html += (
             "<div style='background:#f9f9f9;border-left:4px solid %s;"
