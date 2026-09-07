@@ -131,6 +131,54 @@ def _get_previous_predictions(fecha_resultado: str) -> Optional[List[Dict]]:
 # SCORING SIN IMPORTACION CIRCULAR
 # ─────────────────────────────────────────────────────────────────────
 
+def _quick_stats_from_history(df) -> Dict:
+    """
+    Calcula hot30 y gap directamente desde un DataFrame de historial,
+    sin depender de la cache del predictor principal. Misma logica
+    ya verificada en retroactive_migration.py, reutilizada aqui para
+    que retroactive_learner.py sea autosuficiente sin importar el
+    orden en que corran los pasos del pipeline.
+    """
+    if df is None or df.empty:
+        return {"hot30": {}, "gap": {}}
+
+    n_max = 56
+    ncols = ["N%d" % i for i in range(1, 7)]
+
+    # df viene ordenado descendente (mas reciente primero, igual que
+    # el resto del sistema). hot30 usa los ultimos 30 sorteos.
+    ultimos30 = df.head(30)
+    freq = {}
+    for idx, (_, row) in enumerate(ultimos30.iloc[::-1].iterrows()):
+        wt = 0.95 ** idx
+        for c in ncols:
+            if c in row and pd.notna(row.get(c)):
+                num = int(row[c])
+                freq[str(num)] = freq.get(str(num), 0.) + wt
+    tot = sum(freq.values()) or 1.
+    hot30 = {k: v / tot for k, v in freq.items()}
+
+    # gap: sorteos desde la ultima aparicion, usando todo el historial
+    df_asc = df.iloc[::-1].reset_index(drop=True)
+    n = len(df_asc)
+    last_seen = {}
+    for idx, (_, row) in enumerate(df_asc.iterrows()):
+        for c in ncols:
+            if c in row and pd.notna(row.get(c)):
+                v = int(row[c])
+                if 1 <= v <= n_max:
+                    last_seen[v] = idx
+    exp_g = n_max / 6
+    gap = {}
+    for num in range(1, n_max + 1):
+        if num in last_seen:
+            gap[str(num)] = float(n - 1 - last_seen[num]) / exp_g
+        else:
+            gap[str(num)] = float(n) / exp_g
+
+    return {"hot30": hot30, "gap": gap}
+
+
 def _score_combo_with_model(combo: tuple, name: str,
                              stats: Dict, n_max: int = 56) -> Dict:
     """
@@ -345,8 +393,20 @@ def run_retroactive_learning(all_histories: Dict,
                     rank_en_top = i + 1
                     break
 
-        # Score de la combo ganadora
-        stats       = all_stats.get(name, {})
+        # Score de la combo ganadora.
+        # FIX: en GitHub Actions cada corrida arranca con checkout
+        # limpio -- cache/stats_v8_{name}.joblib aun no existe cuando
+        # el Retroactive Learner corre (corre ANTES de que run_model()
+        # lo genere/actualice en esta misma ejecucion). Antes esto
+        # dejaba "stats" vacio y el score siempre en 0.0000 sin
+        # importar la combinacion, confirmado en produccion con las
+        # 3 loterias mostrando el mismo valor identico. Ahora, si las
+        # stats llegan vacias, se calculan al vuelo directamente
+        # desde el historial real ya disponible en memoria (rapido:
+        # solo hot30+gap, no el ensemble ML completo).
+        stats = all_stats.get(name, {})
+        if not stats.get("hot30"):
+            stats = _quick_stats_from_history(all_histories.get(name))
         winning_info = _score_combo_with_model(winning, name, stats)
         winning_info["plausible"] = (
             115 <= winning_info.get("suma", 0) <= 225 and
@@ -383,7 +443,16 @@ def run_retroactive_learning(all_histories: Dict,
         }
         tracking.setdefault("sorteos", []).append(entry)
 
-        patrones = _detect_patterns(tracking["sorteos"])
+        # FIX: antes se pasaba tracking["sorteos"] completo (las 3
+        # loterias mezcladas), diluyendo un sesgo real y especifico
+        # de una loteria (ej. Melate subestimando numeros bajos) en
+        # un promedio combinado que terminaba diciendo "sin sesgo
+        # claro" aunque el sesgo real seguia ahi. Ahora se filtra
+        # solo por la loteria que se esta reportando.
+        sorteos_de_esta_loteria = [
+            e for e in tracking["sorteos"] if e.get("lottery") == name
+        ]
+        patrones = _detect_patterns(sorteos_de_esta_loteria)
         _save_reinforced(name, tracking["sorteos"])
 
         reporte[name] = {
