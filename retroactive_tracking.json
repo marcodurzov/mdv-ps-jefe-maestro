@@ -2,147 +2,6 @@
   "sorteos": [
     {
       "lottery": "Revanchita",
-      "fecha": "01/07/2026",
-      "winning_combo": [
-        4,
-        15,
-        25,
-        26,
-        27,
-        49
-      ],
-      "bono": null,
-      "winning_info": {
-        "combo": [
-          4,
-          15,
-          25,
-          26,
-          27,
-          49
-        ],
-        "suma": 146,
-        "ml_score": 0.06486,
-        "hot_mean": 0.0152,
-        "gap_mean": 0.9286,
-        "n_low": 2,
-        "n_high": 1,
-        "n_mid": 3,
-        "method": "stats_only"
-      },
-      "estuvo_en_top20": false,
-      "rank_en_top20": null,
-      "analysis": {
-        "severity": "moderado",
-        "miss_reasons": [
-          "Combinacion estadisticamente poco favorecida en su momento"
-        ]
-      },
-      "aciertos_dist": {
-        "1": 11,
-        "0": 7,
-        "2": 2
-      },
-      "n_predicciones": 20,
-      "timestamp": "2026-08-31T22:40:32.380271",
-      "source": "migration"
-    },
-    {
-      "lottery": "Melate",
-      "fecha": "03/07/2026",
-      "winning_combo": [
-        11,
-        12,
-        15,
-        19,
-        36,
-        44
-      ],
-      "bono": 52,
-      "winning_info": {
-        "combo": [
-          11,
-          12,
-          15,
-          19,
-          36,
-          44
-        ],
-        "suma": 137,
-        "ml_score": 0.09472,
-        "hot_mean": 0.0186,
-        "gap_mean": 1.3929,
-        "n_low": 4,
-        "n_high": 1,
-        "n_mid": 1,
-        "method": "stats_only"
-      },
-      "estuvo_en_top20": false,
-      "rank_en_top20": null,
-      "analysis": {
-        "severity": "moderado",
-        "miss_reasons": [
-          "4+ numeros bajos (<=20)"
-        ]
-      },
-      "aciertos_dist": {
-        "2": 6,
-        "1": 13,
-        "0": 1
-      },
-      "n_predicciones": 20,
-      "timestamp": "2026-08-31T22:39:06.079959",
-      "source": "migration"
-    },
-    {
-      "lottery": "Revancha",
-      "fecha": "03/07/2026",
-      "winning_combo": [
-        1,
-        5,
-        6,
-        13,
-        35,
-        43
-      ],
-      "bono": null,
-      "winning_info": {
-        "combo": [
-          1,
-          5,
-          6,
-          13,
-          35,
-          43
-        ],
-        "suma": 103,
-        "ml_score": 0.06262,
-        "hot_mean": 0.0169,
-        "gap_mean": 0.875,
-        "n_low": 4,
-        "n_high": 1,
-        "n_mid": 1,
-        "method": "stats_only"
-      },
-      "estuvo_en_top20": false,
-      "rank_en_top20": null,
-      "analysis": {
-        "severity": "moderado",
-        "miss_reasons": [
-          "Suma 103 muy baja",
-          "4+ numeros bajos (<=20)"
-        ]
-      },
-      "aciertos_dist": {
-        "1": 8,
-        "0": 12
-      },
-      "n_predicciones": 20,
-      "timestamp": "2026-08-31T22:39:56.702178",
-      "source": "migration"
-    },
-    {
-      "lottery": "Revanchita",
       "fecha": "03/07/2026",
       "winning_combo": [
         2,
@@ -4687,9 +4546,154 @@
       "n_predicciones": 18,
       "top20_score_min": 1.60277,
       "timestamp": "2026-09-17T19:59:00.495364"
+    },
+    {
+      "lottery": "Melate",
+      "fecha": "18/09/2026",
+      "winning_combo": [
+        1,
+        4,
+        25,
+        43,
+        46,
+        51
+      ],
+      "winning_info": {
+        "combo": [
+          1,
+          4,
+          25,
+          43,
+          46,
+          51
+        ],
+        "suma": 170,
+        "ml_score": 0.08114,
+        "hot_mean": 0.0162,
+        "gap_mean": 0.0,
+        "n_low": 2,
+        "n_high": 3,
+        "n_mid": 1,
+        "method": "heuristico",
+        "plausible": true
+      },
+      "estuvo_en_top20": false,
+      "rank_en_top20": null,
+      "analysis": {
+        "miss_reasons": [
+          "Score marginalmente bajo (gap=1.4613) — varianza normal del modelo"
+        ],
+        "severity": "grave",
+        "gap_to_predictions": 1.4613
+      },
+      "aciertos_dist": {
+        "0": 9,
+        "2": 3,
+        "1": 7,
+        "3": 1
+      },
+      "n_predicciones": 20,
+      "top20_score_min": 1.54245,
+      "timestamp": "2026-09-19T19:06:29.540492"
+    },
+    {
+      "lottery": "Revancha",
+      "fecha": "18/09/2026",
+      "winning_combo": [
+        16,
+        20,
+        37,
+        38,
+        40,
+        56
+      ],
+      "winning_info": {
+        "combo": [
+          16,
+          20,
+          37,
+          38,
+          40,
+          56
+        ],
+        "suma": 207,
+        "ml_score": 0.09024,
+        "hot_mean": 0.018,
+        "gap_mean": 0.0,
+        "n_low": 2,
+        "n_high": 2,
+        "n_mid": 2,
+        "method": "heuristico",
+        "plausible": true
+      },
+      "estuvo_en_top20": false,
+      "rank_en_top20": null,
+      "analysis": {
+        "miss_reasons": [
+          "Score marginalmente bajo (gap=1.4522) — varianza normal del modelo"
+        ],
+        "severity": "grave",
+        "gap_to_predictions": 1.4522
+      },
+      "aciertos_dist": {
+        "1": 6,
+        "2": 4,
+        "0": 10
+      },
+      "n_predicciones": 20,
+      "top20_score_min": 1.54245,
+      "timestamp": "2026-09-19T19:06:29.735063"
+    },
+    {
+      "lottery": "Revanchita",
+      "fecha": "18/09/2026",
+      "winning_combo": [
+        1,
+        9,
+        12,
+        33,
+        40,
+        44
+      ],
+      "winning_info": {
+        "combo": [
+          1,
+          9,
+          12,
+          33,
+          40,
+          44
+        ],
+        "suma": 139,
+        "ml_score": 0.11293,
+        "hot_mean": 0.0226,
+        "gap_mean": 0.0,
+        "n_low": 3,
+        "n_high": 2,
+        "n_mid": 1,
+        "method": "heuristico",
+        "plausible": true
+      },
+      "estuvo_en_top20": false,
+      "rank_en_top20": null,
+      "analysis": {
+        "miss_reasons": [
+          "Score marginalmente bajo (gap=1.4295) — varianza normal del modelo"
+        ],
+        "severity": "grave",
+        "gap_to_predictions": 1.4295
+      },
+      "aciertos_dist": {
+        "0": 12,
+        "1": 7,
+        "2": 1
+      },
+      "n_predicciones": 20,
+      "top20_score_min": 1.54245,
+      "timestamp": "2026-09-19T19:06:29.856189"
     }
   ],
   "migracion_ejecutada": "2026-08-31T22:40:38.334622",
   "migracion_depth": 150,
-  "ultimo_update": "2026-09-17T19:59:00.496133"
+  "ultimo_update": "2026-09-19T19:06:29.856992"
 }
